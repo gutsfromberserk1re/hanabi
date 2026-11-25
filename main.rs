@@ -7,9 +7,9 @@ use std::{collections::HashMap, time::{Duration, Instant, SystemTime, UNIX_EPOCH
 const INK: Color32 = Color32::from_rgb(38, 43, 54);
 const INK_SOFT: Color32 = Color32::from_rgb(112, 119, 132);
 const BLUE: Color32 = Color32::from_rgb(91, 153, 238);
-fn panel() -> Color32 { Color32::from_rgba_unmultiplied(250, 251, 253, 188) }
-fn panel_edge() -> Color32 { Color32::from_rgba_unmultiplied(255, 255, 255, 232) }
-fn soft_edge() -> Color32 { Color32::from_rgba_unmultiplied(160, 169, 184, 92) }
+fn panel() -> Color32 { Color32::from_rgba_unmultiplied(250, 252, 255, 154) }
+fn panel_edge() -> Color32 { Color32::from_rgba_unmultiplied(255, 255, 255, 218) }
+fn soft_edge() -> Color32 { Color32::from_rgba_unmultiplied(153, 166, 185, 76) }
 const MIN_PROJECT_SECONDS: f64 = 60.0;
 const PREVIEW_FPS: u64 = 30;
 
@@ -59,8 +59,11 @@ impl HanabiApp {
         let mut visuals = Visuals::light();
         visuals.window_fill = Color32::TRANSPARENT;
         visuals.panel_fill = Color32::TRANSPARENT;
-        visuals.extreme_bg_color = Color32::from_rgb(244, 246, 249);
-        visuals.faint_bg_color = Color32::from_rgb(239, 242, 246);
+        // Keep the native window transparent so Windows Acrylic can provide
+        // the blurred backdrop. These colors are only subtle tints, not a
+        // painted opaque canvas behind the editor.
+        visuals.extreme_bg_color = Color32::from_rgba_unmultiplied(248, 250, 253, 28);
+        visuals.faint_bg_color = Color32::from_rgba_unmultiplied(248, 250, 253, 18);
         visuals.selection.bg_fill = BLUE;
         visuals.selection.stroke = Stroke::new(1.0_f32, Color32::from_rgb(58, 112, 194));
         visuals.widgets.noninteractive.bg_fill = Color32::from_white_alpha(90);
@@ -75,7 +78,7 @@ impl HanabiApp {
         // Windows Acrylic supplies the real blurred backdrop. The UI itself is
         // a neutral white-tinted glass surface and never paints the old gradient.
         #[cfg(target_os = "windows")]
-        let _ = window_vibrancy::apply_acrylic(cc, Some((244, 247, 251, 190)));
+        let _ = window_vibrancy::apply_acrylic(cc, Some((247, 249, 253, 148)));
 
         let timeline = engine::request(json!({"command":"timeline_get"})).unwrap_or_else(|error| {
             eprintln!("Hanabi engine initialization: {error}");
@@ -387,7 +390,7 @@ impl HanabiApp {
     fn draw_titlebar(&mut self, ctx: &Context) {
         TopBottomPanel::top("hanabi-titlebar").exact_height(36.0).frame(Frame::none()).show(ctx, |ui| {
             let full = ui.max_rect();
-            ui.painter().rect_filled(full, 0.0, Color32::from_rgba_unmultiplied(246, 248, 251, 145));
+            ui.painter().rect_filled(full, 0.0, Color32::from_rgba_unmultiplied(25, 29, 36, 232));
             let drag_rect = Rect::from_min_max(full.min, pos2(full.right() - 144.0, full.bottom()));
             let drag = ui.interact(drag_rect, ui.id().with("window-drag"), Sense::click_and_drag());
             if drag.drag_started_by(PointerButton::Primary) {
@@ -399,8 +402,8 @@ impl HanabiApp {
             }
             ui.painter().circle_filled(pos2(17.0, full.center().y), 7.0, BLUE);
             ui.painter().circle_stroke(pos2(17.0, full.center().y), 7.0, Stroke::new(1.0_f32, Color32::WHITE));
-            ui.painter().text(pos2(32.0, full.center().y), Align2::LEFT_CENTER, "Hanabi", FontId::proportional(14.0), INK);
-            ui.painter().text(pos2(92.0, full.center().y), Align2::LEFT_CENTER, "VIDEO EDITOR", FontId::proportional(9.0), INK_SOFT);
+            ui.painter().text(pos2(32.0, full.center().y), Align2::LEFT_CENTER, "Hanabi", FontId::proportional(14.0), Color32::from_rgb(241, 244, 249));
+            ui.painter().text(pos2(92.0, full.center().y), Align2::LEFT_CENTER, "VIDEO EDITOR", FontId::proportional(9.0), Color32::from_rgb(157, 166, 180));
 
             let button_w = 46.0;
             for (index, glyph) in ["—", "□", "×"].iter().enumerate() {
@@ -411,7 +414,7 @@ impl HanabiApp {
                     let fill = if index == 2 { Color32::from_rgb(220, 75, 85) } else { Color32::from_white_alpha(190) };
                     ui.painter().rect_filled(rect.shrink2(vec2(3.0, 3.0)), 8.0, fill);
                 }
-                let col = if index == 2 && hover { Color32::WHITE } else { INK_SOFT };
+                let col = if index == 2 && hover { Color32::WHITE } else { Color32::from_rgb(176, 185, 198) };
                 ui.painter().text(rect.center(), Align2::CENTER_CENTER, *glyph, FontId::proportional(17.0), col);
                 if response.clicked() {
                     match index {
@@ -429,17 +432,17 @@ impl HanabiApp {
 
     fn draw_inspector(&mut self, ctx: &Context) {
         SidePanel::right("hanabi-inspector")
-            .default_width(360.0).min_width(320.0).max_width(440.0).resizable(true)
+            .default_width(350.0).min_width(310.0).max_width(430.0).resizable(true)
             .frame(Frame::none())
             .show(ctx, |ui| {
                 surface(ui, |ui| {
                     let tab_h = 38.0;
                     Frame::none()
-                        .fill(Color32::from_rgba_unmultiplied(226, 229, 234, 170))
+                        .fill(Color32::from_rgba_unmultiplied(226, 231, 239, 126))
                         .rounding(22.0)
                         .inner_margin(Margin::same(4.0))
                         .show(ui, |ui| {
-                            let labels = ["Transform", "Adjust", "Media"];
+                            let labels = ["Transform", "Colors", "Media"];
                             let (strip, _) = ui.allocate_exact_size(
                                 vec2(ui.available_width(), tab_h), Sense::hover(),
                             );
@@ -519,8 +522,8 @@ impl HanabiApp {
             let count = clip["keyframes"].as_array().map_or(0, Vec::len);
             ui.label(RichText::new(format!("{count} keyframes · playhead {:.2}s", self.playhead)).size(12.0).color(INK_SOFT));
             ui.horizontal(|ui| {
-                if ui.button("＋ Add at playhead").clicked() { self.add_keyframe(); }
-                if ui.button("− Remove nearby").clicked() { self.remove_keyframe_at_playhead(); }
+                if glass_button(ui, "＋ Add at playhead").clicked() { self.add_keyframe(); }
+                if glass_button(ui, "− Remove nearby").clicked() { self.remove_keyframe_at_playhead(); }
             });
             ui.label(RichText::new("Transform, color and effect values interpolate between keyframes in preview and export.").size(11.0).color(INK_SOFT));
         });
@@ -625,7 +628,7 @@ impl HanabiApp {
         ui.horizontal(|ui| {
             ui.label(RichText::new("Media Library").strong().color(INK));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.button("＋ Import").clicked() { self.import_media(); }
+                if glass_button(ui, "＋ Import").clicked() { self.import_media(); }
             });
         });
         ui.add_space(8.0);
@@ -652,8 +655,8 @@ impl HanabiApp {
                             ui.label(RichText::new(format!("{} · {:.1}s{}", item.kind, item.duration, suffix)).size(10.5).color(INK_SOFT));
                         });
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.small_button("Add").clicked() { self.add_media_clip(&item); }
-                            if ui.small_button("Select").clicked() { self.selected_media = Some(index); }
+                            if glass_button(ui, "Add").clicked() { self.add_media_clip(&item); }
+                            if glass_button(ui, "Select").clicked() { self.selected_media = Some(index); }
                         });
                     });
                 });
@@ -664,11 +667,31 @@ impl HanabiApp {
     fn property_slider(&mut self, ui: &mut Ui, label: &str, path: &str, min: f32, max: f32, default: f32, unit: &str) {
         if self.selected_clip_value().is_none() { return; }
         let mut value = self.selected_clip_value().map(|clip| json_number(&clip["props"], path, default as f64) as f32).unwrap_or(default);
-        let response = ui.add(Slider::new(&mut value, min..=max).text(label).show_value(false));
-        ui.horizontal(|ui| {
-            ui.add_space(2.0);
-            ui.label(RichText::new(format!("{value:.1}{unit}")).size(11.0).color(INK_SOFT));
-        });
+        let response = ui.horizontal(|ui| {
+            ui.add_sized(
+                vec2(76.0, 24.0),
+                Label::new(RichText::new(label).size(12.0).color(INK)),
+            );
+            let value_width = 56.0;
+            let slider_width = (ui.available_width() - value_width - ui.spacing().item_spacing.x).max(54.0);
+            let response = ui.add_sized(
+                vec2(slider_width, 22.0),
+                Slider::new(&mut value, min..=max).show_value(false),
+            );
+            Frame::none()
+                .fill(Color32::from_rgba_unmultiplied(231, 235, 242, 150))
+                .stroke(Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 190)))
+                .rounding(12.0)
+                .inner_margin(Margin::symmetric(7.0, 4.0))
+                .show(ui, |ui| {
+                    ui.set_min_size(vec2(value_width, 23.0));
+                    ui.centered_and_justified(|ui| {
+                        ui.label(RichText::new(format!("{value:.0}{unit}")).size(11.0).color(INK_SOFT));
+                    });
+                });
+            response
+        }).inner;
+        ui.add_space(5.0);
         if response.changed() {
             self.set_clip_property(path, json!(value), true);
             if path == "transform.scale.w" {
@@ -689,9 +712,9 @@ impl HanabiApp {
                         ui.label(RichText::new("TIMELINE").strong().size(11.0).color(INK_SOFT));
                         ui.label(RichText::new(format!("{} clips", self.timeline["clips"].as_array().map_or(0, Vec::len))).size(11.0).color(INK_SOFT));
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.button("＋ Keyframe").clicked() { self.add_keyframe(); }
+                            if glass_button(ui, "＋ Keyframe").clicked() { self.add_keyframe(); }
                             let keyframes_label = if self.show_keyframes { "◆ Keyframes on" } else { "◇ Keyframes off" };
-                            if ui.button(keyframes_label).clicked() { self.show_keyframes = !self.show_keyframes; }
+                            if glass_button(ui, keyframes_label).clicked() { self.show_keyframes = !self.show_keyframes; }
                         });
                     });
                     ui.add_space(5.0);
@@ -711,7 +734,7 @@ impl HanabiApp {
         let row_h = tracks.height() / rows.len() as f32;
         let duration = self.project_duration();
         let painter = ui.painter().clone();
-        painter.rect_filled(canvas, 11.0, Color32::from_rgba_unmultiplied(242, 245, 249, 125));
+        painter.rect_filled(canvas, 11.0, Color32::from_rgba_unmultiplied(250, 252, 255, 112));
         painter.rect_stroke(canvas, 11.0, Stroke::new(1.0_f32, Color32::from_white_alpha(220)));
 
         for second in 0..=(duration.ceil() as usize / 5) {
@@ -813,81 +836,160 @@ impl eframe::App for HanabiApp {
         self.draw_timeline(ctx);
         self.draw_inspector(ctx);
         CentralPanel::default().frame(Frame::none()).show(ctx, |ui| {
-            ui.add_space(4.0);
-            surface(ui, |ui| {
-                ui.horizontal(|ui| {
-                    let toolbar_w = 43.0;
-                    ui.vertical(|ui| {
-                        for (index, glyph) in ["✂", "T", "▶"].iter().enumerate() {
-                            let selected = self.tool == index;
-                            let (rect, response) = ui.allocate_exact_size(vec2(toolbar_w - 2.0, 42.0), Sense::click());
-                            if response.clicked() { self.tool = index; }
-                            let t = ui.ctx().animate_bool_with_time(ui.id().with(("tool", index)), selected || response.hovered(), 0.14);
-                            if t > 0.01 {
-                                ui.painter().rect_filled(rect.shrink(2.0), 12.0, Color32::from_white_alpha((95.0 + 120.0 * t) as u8));
-                                ui.painter().rect_stroke(rect.shrink(2.0), 12.0, Stroke::new(1.0_f32, panel_edge()));
-                            }
-                            ui.painter().text(rect.center(), Align2::CENTER_CENTER, *glyph, FontId::proportional(18.0), INK);
-                            ui.add_space(3.0);
-                        }
-                    });
-                    ui.add_space(8.0);
-                    Frame::none().fill(Color32::from_white_alpha(214)).stroke(Stroke::new(1.0_f32, panel_edge())).rounding(20.0).inner_margin(Margin::same(15.0)).show(ui, |ui| {
-                        ui.set_min_width(260.0);
-                        ui.set_min_height(410.0);
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(format!("{} / {}", fmt_time(self.playhead), fmt_time(self.project_duration()))).monospace().size(11.0).strong().color(INK_SOFT));
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if self.exporting {
-                                    ui.spinner();
-                                    ui.label(RichText::new("Exporting").size(11.0).color(INK_SOFT));
-                                } else if ui.button("⇧ Export").clicked() { self.export_project(); }
-                            });
-                        });
-                        let space = ui.available_size();
-                        let preview_size = vec2(space.x, (space.y - 105.0).max(150.0));
-                        let (preview_rect, _) = ui.allocate_exact_size(preview_size, Sense::hover());
-                        ui.allocate_ui_at_rect(preview_rect.shrink(4.0), |ui| {
-                            ui.centered_and_justified(|ui| {
-                                if let Some(texture) = &self.preview_texture {
-                                    let aspect = texture.size_vec2().x / texture.size_vec2().y.max(1.0);
-                                    let available = ui.available_size();
-                                    let mut size = vec2(available.x, available.x / aspect.max(0.1));
-                                    if size.y > available.y { size = vec2(available.y * aspect, available.y); }
-                                    ui.image((texture.id(), size));
-                                } else {
-                                    ui.vertical_centered(|ui| {
-                                        ui.label(RichText::new("HANABI PREVIEW").size(12.0).strong().color(Color32::from_rgb(165, 173, 185)));
-                                        ui.add_space(6.0);
-                                        ui.label(RichText::new(if self.preview_message.is_empty() { "Your composition will appear here" } else { &self.preview_message }).size(11.0).color(INK_SOFT));
-                                    });
+            ui.add_space(5.0);
+            let workspace = ui.available_size();
+            let workspace_h = (workspace.y - 9.0).max(180.0);
+            let toolbar_w = 52.0;
+            let gap = 10.0;
+            let preview_w = (workspace.x - toolbar_w - gap).max(220.0);
+
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                // A separate floating tool rail, rather than embedding the
+                // controls inside the preview card.
+                ui.allocate_ui_with_layout(
+                    vec2(toolbar_w, workspace_h),
+                    Layout::top_down(Align::Center),
+                    |ui| {
+                        let rail_h = 154.0;
+                        ui.add_space(((workspace_h - rail_h) * 0.5).max(0.0));
+                        let rail_frame = Frame::none()
+                            .fill(Color32::from_rgba_unmultiplied(250, 252, 255, 190))
+                            .stroke(Stroke::new(1.0_f32, panel_edge()))
+                            .rounding(24.0)
+                            .inner_margin(Margin::same(5.0));
+                        rail_frame.show(ui, |ui| {
+                            ui.set_min_width(40.0);
+                            ui.vertical_centered(|ui| {
+                                for (index, glyph) in ["✂", "Aa", "▶"].iter().enumerate() {
+                                    let selected = self.tool == index;
+                                    let (rect, response) = ui.allocate_exact_size(vec2(40.0, 42.0), Sense::click());
+                                    if response.clicked() { self.tool = index; }
+                                    let t = ui.ctx().animate_bool_with_time(
+                                        ui.id().with(("tool", index)), selected || response.hovered(), 0.14,
+                                    );
+                                    if t > 0.01 {
+                                        ui.painter().add(epaint::Shadow {
+                                            offset: vec2(0.0, 2.0), blur: 7.0, spread: 0.0,
+                                            color: Color32::from_black_alpha(22),
+                                        }.as_shape(rect.shrink(2.0), 13.0));
+                                        ui.painter().rect_filled(
+                                            rect.shrink(2.0), 13.0,
+                                            Color32::from_white_alpha((112.0 + 112.0 * t) as u8),
+                                        );
+                                        ui.painter().rect_stroke(rect.shrink(2.0), 13.0, Stroke::new(1.0_f32, panel_edge()));
+                                    }
+                                    ui.painter().text(rect.center(), Align2::CENTER_CENTER, *glyph, FontId::proportional(17.0), INK);
+                                    ui.add_space(2.0);
                                 }
                             });
                         });
-                        ui.add_space(4.0);
-                        let timeline_duration = self.project_duration();
-                        ui.add(Slider::new(&mut self.playhead, 0.0..=timeline_duration).show_value(false));
-                        if ui.ctx().input(|input| input.pointer.any_released()) {
-                            self.mark_preview_dirty();
-                        }
-                        ui.horizontal(|ui| {
-                            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                                if ui.button("⏮").clicked() { self.playhead = 0.0; self.mark_preview_dirty(); }
-                                let play_label = if self.playing { "Ⅱ Pause" } else { "▶ Play" };
-                                if ui.button(play_label).clicked() {
-                                    self.playing = !self.playing;
-                                    self.last_playback_tick = Instant::now();
+                    },
+                );
+                ui.add_space(gap);
+                ui.allocate_ui_with_layout(
+                    vec2(preview_w, workspace_h),
+                    Layout::top_down(Align::Min),
+                    |ui| {
+                        let card_w = preview_w;
+                        let card_h = workspace_h;
+                        let card_rect = ui.available_rect_before_wrap().shrink(1.0);
+                        ui.painter().add(epaint::Shadow {
+                            offset: vec2(0.0, 5.0), blur: 18.0, spread: 0.0,
+                            color: Color32::from_black_alpha(20),
+                        }.as_shape(card_rect, 22.0));
+                        Frame::none()
+                            .fill(Color32::from_rgba_unmultiplied(250, 252, 255, 166))
+                            .stroke(Stroke::new(1.0_f32, panel_edge()))
+                            .rounding(22.0)
+                            .inner_margin(Margin::same(16.0))
+                            .show(ui, |ui| {
+                                // Force the card's content region to occupy the full
+                                // allocated width and height. This also keeps empty-state
+                                // labels centered and normally wrapped.
+                                ui.set_min_size(vec2((card_w - 32.0).max(120.0), (card_h - 32.0).max(120.0)));
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new(format!("{} / {}", fmt_time(self.playhead), fmt_time(self.project_duration())))
+                                        .monospace().size(11.0).strong().color(INK_SOFT));
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        if self.exporting {
+                                            ui.spinner();
+                                            ui.label(RichText::new("Exporting").size(11.0).color(INK_SOFT));
+                                        } else if glass_button(ui, "⇧ Export").clicked() {
+                                            self.export_project();
+                                        }
+                                    });
+                                });
+
+                                ui.add_space(4.0);
+                                let inner_width = ui.available_width();
+                                let inner_height = ui.available_height();
+                                let controls_height = 76.0;
+                                let preview_height = (inner_height - controls_height - 10.0).max(120.0);
+                                ui.allocate_ui_with_layout(
+                                    vec2(inner_width, preview_height),
+                                    Layout::top_down(Align::Center),
+                                    |ui| {
+                                        ui.centered_and_justified(|ui| {
+                                            if let Some(texture) = &self.preview_texture {
+                                                let aspect = texture.size_vec2().x / texture.size_vec2().y.max(1.0);
+                                                let available = ui.available_size();
+                                                let mut size = vec2(available.x, available.x / aspect.max(0.1));
+                                                if size.y > available.y { size = vec2(available.y * aspect, available.y); }
+                                                ui.image((texture.id(), size));
+                                            } else {
+                                                ui.vertical_centered(|ui| {
+                                                    ui.label(RichText::new("Preview").size(18.0)
+                                                        .color(Color32::from_rgba_unmultiplied(120, 130, 145, 100)));
+                                                    if !self.preview_message.is_empty()
+                                                        && self.preview_message != "Import a video or image to begin"
+                                                    {
+                                                        ui.add_space(5.0);
+                                                        ui.label(RichText::new(&self.preview_message).size(11.0).color(INK_SOFT));
+                                                    }
+                                                });
+                                            }
+                                        });
+                                    },
+                                );
+                                ui.add_space(2.0);
+                                let timeline_duration = self.project_duration();
+                                let slider_response = ui.add_sized(
+                                    vec2(inner_width, 18.0),
+                                    Slider::new(&mut self.playhead, 0.0..=timeline_duration).show_value(false),
+                                );
+                                if slider_response.drag_stopped() || slider_response.clicked() {
                                     self.mark_preview_dirty();
                                 }
-                                if ui.button("◀ Frame").clicked() { self.playhead = (self.playhead - 1.0 / PREVIEW_FPS as f64).max(0.0); self.mark_preview_dirty(); }
-                                if ui.button("Frame ▶").clicked() { self.playhead = (self.playhead + 1.0 / PREVIEW_FPS as f64).min(self.project_duration()); self.mark_preview_dirty(); }
+                                ui.add_space(3.0);
+                                ui.horizontal(|ui| {
+                                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                                        if glass_button(ui, "⏮").clicked() {
+                                            self.playhead = 0.0;
+                                            self.mark_preview_dirty();
+                                        }
+                                        let play_label = if self.playing { "Ⅱ Pause" } else { "▶ Play" };
+                                        if glass_button(ui, play_label).clicked() {
+                                            self.playing = !self.playing;
+                                            self.last_playback_tick = Instant::now();
+                                            self.mark_preview_dirty();
+                                        }
+                                        if glass_button(ui, "◀ Frame").clicked() {
+                                            self.playhead = (self.playhead - 1.0 / PREVIEW_FPS as f64).max(0.0);
+                                            self.mark_preview_dirty();
+                                        }
+                                        if glass_button(ui, "Frame ▶").clicked() {
+                                            self.playhead = (self.playhead + 1.0 / PREVIEW_FPS as f64).min(self.project_duration());
+                                            self.mark_preview_dirty();
+                                        }
+                                    });
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        ui.label(RichText::new(format!("{} fps", PREVIEW_FPS)).size(10.0).color(INK_SOFT));
+                                    });
+                                });
                             });
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                ui.label(RichText::new(format!("{} fps", PREVIEW_FPS)).size(10.0).color(INK_SOFT));
-                            });
-                        });
-                    });
-                });
+                    },
+                );
             });
         });
         if Instant::now() < self.status_until {
@@ -902,14 +1004,44 @@ impl eframe::App for HanabiApp {
 }
 
 fn surface(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
+    let rect = ui.available_rect_before_wrap().shrink(1.0);
+    ui.painter().add(epaint::Shadow {
+        offset: vec2(0.0, 5.0), blur: 18.0, spread: 0.0,
+        color: Color32::from_black_alpha(18),
+    }.as_shape(rect, 20.0));
     Frame::none().fill(panel()).stroke(Stroke::new(1.0_f32, panel_edge())).rounding(20.0)
         .inner_margin(Margin::same(12.0)).show(ui, add_contents);
 }
 
 fn section_surface(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
-    Frame::none().fill(Color32::from_rgba_unmultiplied(255, 255, 255, 124))
-        .stroke(Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(166, 176, 190, 104)))
+    Frame::none().fill(Color32::from_rgba_unmultiplied(255, 255, 255, 104))
+        .stroke(Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(166, 176, 190, 78)))
         .rounding(15.0).inner_margin(Margin::same(8.0)).show(ui, add_contents);
+}
+
+fn glass_button(ui: &mut Ui, label: &str) -> Response {
+    let font_id = TextStyle::Button.resolve(ui.style());
+    let galley = ui.painter().layout_no_wrap(label.to_owned(), font_id.clone(), INK);
+    let padding = ui.spacing().button_padding;
+    let mut desired_size = galley.size() + padding * 2.0 + vec2(4.0, 3.0);
+    desired_size.x = desired_size.x.max(42.0);
+    desired_size.y = desired_size.y.max(29.0);
+    let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
+    let fill = if response.is_pointer_button_down_on() {
+        Color32::from_rgba_unmultiplied(226, 236, 250, 238)
+    } else if response.hovered() {
+        Color32::from_rgba_unmultiplied(255, 255, 255, 248)
+    } else {
+        Color32::from_rgba_unmultiplied(250, 252, 255, 218)
+    };
+    ui.painter().add(epaint::Shadow {
+        offset: vec2(0.0, 2.0), blur: 7.0, spread: 0.0,
+        color: Color32::from_black_alpha(if response.hovered() { 30 } else { 20 }),
+    }.as_shape(rect, 11.0));
+    ui.painter().rect_filled(rect, 11.0, fill);
+    ui.painter().rect_stroke(rect, 11.0, Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 225)));
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, label, font_id, INK);
+    response
 }
 
 fn empty_state(ui: &mut Ui, title: &str, detail: &str) {

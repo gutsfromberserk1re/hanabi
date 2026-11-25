@@ -7,9 +7,9 @@ use std::{collections::HashMap, time::{Duration, Instant, SystemTime, UNIX_EPOCH
 const INK: Color32 = Color32::from_rgb(38, 43, 54);
 const INK_SOFT: Color32 = Color32::from_rgb(112, 119, 132);
 const BLUE: Color32 = Color32::from_rgb(91, 153, 238);
-const PANEL: Color32 = Color32::from_rgba_unmultiplied(250, 251, 253, 188);
-const PANEL_EDGE: Color32 = Color32::from_rgba_unmultiplied(255, 255, 255, 232);
-const SOFT_EDGE: Color32 = Color32::from_rgba_unmultiplied(160, 169, 184, 92);
+fn panel() -> Color32 { Color32::from_rgba_unmultiplied(250, 251, 253, 188) }
+fn panel_edge() -> Color32 { Color32::from_rgba_unmultiplied(255, 255, 255, 232) }
+fn soft_edge() -> Color32 { Color32::from_rgba_unmultiplied(160, 169, 184, 92) }
 const MIN_PROJECT_SECONDS: f64 = 60.0;
 const PREVIEW_FPS: u64 = 30;
 
@@ -62,13 +62,13 @@ impl HanabiApp {
         visuals.extreme_bg_color = Color32::from_rgb(244, 246, 249);
         visuals.faint_bg_color = Color32::from_rgb(239, 242, 246);
         visuals.selection.bg_fill = BLUE;
-        visuals.selection.stroke = Stroke::new(1.0, Color32::from_rgb(58, 112, 194));
+        visuals.selection.stroke = Stroke::new(1.0_f32, Color32::from_rgb(58, 112, 194));
         visuals.widgets.noninteractive.bg_fill = Color32::from_white_alpha(90);
-        visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, SOFT_EDGE);
+        visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, soft_edge());
         visuals.widgets.inactive.bg_fill = Color32::from_rgba_unmultiplied(242, 244, 247, 220);
-        visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, Color32::from_white_alpha(225));
+        visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, Color32::from_white_alpha(225));
         visuals.widgets.hovered.bg_fill = Color32::from_rgba_unmultiplied(255, 255, 255, 246);
-        visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, Color32::from_rgb(193, 205, 222));
+        visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(193, 205, 222));
         visuals.widgets.active.bg_fill = Color32::from_rgb(226, 237, 252);
         cc.egui_ctx.set_visuals(visuals);
 
@@ -398,7 +398,7 @@ impl HanabiApp {
                 ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
             }
             ui.painter().circle_filled(pos2(17.0, full.center().y), 7.0, BLUE);
-            ui.painter().circle_stroke(pos2(17.0, full.center().y), 7.0, Stroke::new(1.0, Color32::WHITE));
+            ui.painter().circle_stroke(pos2(17.0, full.center().y), 7.0, Stroke::new(1.0_f32, Color32::WHITE));
             ui.painter().text(pos2(32.0, full.center().y), Align2::LEFT_CENTER, "Hanabi", FontId::proportional(14.0), INK);
             ui.painter().text(pos2(92.0, full.center().y), Align2::LEFT_CENTER, "VIDEO EDITOR", FontId::proportional(9.0), INK_SOFT);
 
@@ -469,7 +469,7 @@ impl HanabiApp {
                                 color: Color32::from_black_alpha(24),
                             }.as_shape(active, 19.0));
                             ui.painter().rect_filled(active, 19.0, Color32::from_white_alpha(232));
-                            ui.painter().rect_stroke(active, 19.0, Stroke::new(1.0, PANEL_EDGE));
+                            ui.painter().rect_stroke(active, 19.0, Stroke::new(1.0_f32, panel_edge()));
                             for (index, label) in labels.iter().enumerate() {
                                 let rect = Rect::from_min_size(
                                     pos2(strip.left() + index as f32 * segment_w, strip.top()),
@@ -483,7 +483,7 @@ impl HanabiApp {
                             }
                         });
                     ui.add_space(9.0);
-                    ScrollArea::vertical().id_source("hanabi-inspector-scroll").auto_shrink([false, false]).show(ui, |ui| {
+                    ScrollArea::vertical().id_salt("hanabi-inspector-scroll").auto_shrink([false, false]).show(ui, |ui| {
                         match self.inspector_tab {
                             0 => self.draw_transform_tab(ui),
                             1 => self.draw_adjust_tab(ui),
@@ -549,9 +549,9 @@ impl HanabiApp {
             painter.text(rect.left_center() + vec2(5.0, 0.0), Align2::LEFT_CENTER, glyph, FontId::proportional(16.0), INK);
             painter.text(rect.left_center() + vec2(29.0, 0.0), Align2::LEFT_CENTER, title, FontId::proportional(14.0), INK);
             let center = rect.right_center() - vec2(12.0, 0.0);
-            painter.circle_stroke(center, 8.0, Stroke::new(1.0, INK_SOFT));
-            painter.line_segment([center - vec2(3.5, 0.0), center + vec2(3.5, 0.0)], Stroke::new(1.2, INK_SOFT));
-            if !open { painter.line_segment([center - vec2(0.0, 3.5), center + vec2(0.0, 3.5)], Stroke::new(1.2, INK_SOFT)); }
+            painter.circle_stroke(center, 8.0, Stroke::new(1.0_f32, INK_SOFT));
+            painter.line_segment([center - vec2(3.5, 0.0), center + vec2(3.5, 0.0)], Stroke::new(1.2_f32, INK_SOFT));
+            if !open { painter.line_segment([center - vec2(0.0, 3.5), center + vec2(0.0, 3.5)], Stroke::new(1.2_f32, INK_SOFT)); }
             if anim > 0.002 {
                 // Reserve only the currently visible height, but lay out the
                 // complete contents in a clipped child. This gives the section
@@ -638,7 +638,7 @@ impl HanabiApp {
             let item = self.media[index].clone();
             Frame::none()
                 .fill(if selected { Color32::from_rgba_unmultiplied(228, 239, 255, 220) } else { Color32::from_white_alpha(115) })
-                .stroke(Stroke::new(1.0, if selected { Color32::from_rgb(161, 190, 230) } else { SOFT_EDGE }))
+                .stroke(Stroke::new(1.0_f32, if selected { Color32::from_rgb(161, 190, 230) } else { soft_edge() }))
                 .rounding(13.0).inner_margin(Margin::same(9.0)).show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(if item.kind == "audio" { "♫" } else if item.kind == "image" { "▧" } else { "▶" });
@@ -712,12 +712,12 @@ impl HanabiApp {
         let duration = self.project_duration();
         let painter = ui.painter().clone();
         painter.rect_filled(canvas, 11.0, Color32::from_rgba_unmultiplied(242, 245, 249, 125));
-        painter.rect_stroke(canvas, 11.0, Stroke::new(1.0, Color32::from_white_alpha(220)));
+        painter.rect_stroke(canvas, 11.0, Stroke::new(1.0_f32, Color32::from_white_alpha(220)));
 
         for second in 0..=(duration.ceil() as usize / 5) {
             let t = second as f64 * 5.0;
             let x = tracks.left() + (t / duration) as f32 * tracks.width();
-            painter.line_segment([pos2(x, canvas.top() + 1.0), pos2(x, tracks.bottom())], Stroke::new(1.0, Color32::from_rgba_unmultiplied(130, 143, 163, 45)));
+            painter.line_segment([pos2(x, canvas.top() + 1.0), pos2(x, tracks.bottom())], Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(130, 143, 163, 45)));
             painter.text(pos2(x + 3.0, canvas.top() + 8.0), Align2::LEFT_CENTER, format!("{t:.0}s"), FontId::proportional(9.5), INK_SOFT);
         }
 
@@ -726,7 +726,7 @@ impl HanabiApp {
             let row = Rect::from_min_size(pos2(tracks.left(), top), vec2(tracks.width(), row_h));
             if index % 2 == 0 { painter.rect_filled(row, 0.0, Color32::from_rgba_unmultiplied(255, 255, 255, 50)); }
             painter.text(pos2(canvas.left() + 4.0, row.center().y), Align2::LEFT_CENTER, *label, FontId::proportional(10.0), INK_SOFT);
-            painter.line_segment([row.left_bottom(), row.right_bottom()], Stroke::new(1.0, Color32::from_rgba_unmultiplied(145, 156, 173, 52)));
+            painter.line_segment([row.left_bottom(), row.right_bottom()], Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(145, 156, 173, 52)));
         }
 
         // Track background interaction provides scrubbing; clip interactions are
@@ -755,7 +755,7 @@ impl HanabiApp {
             let base = if track.starts_with('a') { Color32::from_rgb(150, 179, 209) } else { Color32::from_rgb(116, 167, 229) };
             let fill = if selected { base } else { base.gamma_multiply(0.78) };
             painter.rect_filled(rect, 6.0, fill);
-            painter.rect_stroke(rect, 6.0, Stroke::new(if selected { 2.0 } else { 1.0 }, if selected { Color32::WHITE } else { Color32::from_white_alpha(170) }));
+            painter.rect_stroke(rect, 6.0, Stroke::new(if selected { 2.0_f32 } else { 1.0_f32 }, if selected { Color32::WHITE } else { Color32::from_white_alpha(170) }));
             painter.text(rect.left_center() + vec2(7.0, 0.0), Align2::LEFT_CENTER, clip["label"].as_str().unwrap_or("Clip"), FontId::proportional(9.5), Color32::WHITE);
             if response.clicked() {
                 self.selected_clip = Some(id.clone());
@@ -778,7 +778,7 @@ impl HanabiApp {
                             let center = pos2(kx, rect.top() + 4.0);
                             painter.add(Shape::convex_polygon(
                                 vec![center + vec2(0.0, -4.0), center + vec2(4.0, 0.0), center + vec2(0.0, 4.0), center + vec2(-4.0, 0.0)],
-                                Color32::from_rgb(255, 226, 139), Stroke::new(1.0, Color32::from_rgb(176, 128, 35)),
+                                Color32::from_rgb(255, 226, 139), Stroke::new(1.0_f32, Color32::from_rgb(176, 128, 35)),
                             ));
                         }
                     }
@@ -787,7 +787,7 @@ impl HanabiApp {
         }
 
         let play_x = tracks.left() + (self.playhead / duration) as f32 * tracks.width();
-        painter.line_segment([pos2(play_x, canvas.top()), pos2(play_x, tracks.bottom())], Stroke::new(1.6, BLUE));
+        painter.line_segment([pos2(play_x, canvas.top()), pos2(play_x, tracks.bottom())], Stroke::new(1.6_f32, BLUE));
         painter.circle_filled(pos2(play_x, tracks.top() - 2.0), 4.0, BLUE);
     }
 }
@@ -825,14 +825,14 @@ impl eframe::App for HanabiApp {
                             let t = ui.ctx().animate_bool_with_time(ui.id().with(("tool", index)), selected || response.hovered(), 0.14);
                             if t > 0.01 {
                                 ui.painter().rect_filled(rect.shrink(2.0), 12.0, Color32::from_white_alpha((95.0 + 120.0 * t) as u8));
-                                ui.painter().rect_stroke(rect.shrink(2.0), 12.0, Stroke::new(1.0, PANEL_EDGE));
+                                ui.painter().rect_stroke(rect.shrink(2.0), 12.0, Stroke::new(1.0_f32, panel_edge()));
                             }
                             ui.painter().text(rect.center(), Align2::CENTER_CENTER, *glyph, FontId::proportional(18.0), INK);
                             ui.add_space(3.0);
                         }
                     });
                     ui.add_space(8.0);
-                    Frame::none().fill(Color32::from_white_alpha(214)).stroke(Stroke::new(1.0, PANEL_EDGE)).rounding(20.0).inner_margin(Margin::same(15.0)).show(ui, |ui| {
+                    Frame::none().fill(Color32::from_white_alpha(214)).stroke(Stroke::new(1.0_f32, panel_edge())).rounding(20.0).inner_margin(Margin::same(15.0)).show(ui, |ui| {
                         ui.set_min_width(260.0);
                         ui.set_min_height(410.0);
                         ui.horizontal(|ui| {
@@ -902,13 +902,13 @@ impl eframe::App for HanabiApp {
 }
 
 fn surface(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
-    Frame::none().fill(PANEL).stroke(Stroke::new(1.0, PANEL_EDGE)).rounding(20.0)
+    Frame::none().fill(panel()).stroke(Stroke::new(1.0_f32, panel_edge())).rounding(20.0)
         .inner_margin(Margin::same(12.0)).show(ui, add_contents);
 }
 
 fn section_surface(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
     Frame::none().fill(Color32::from_rgba_unmultiplied(255, 255, 255, 124))
-        .stroke(Stroke::new(1.0, Color32::from_rgba_unmultiplied(166, 176, 190, 104)))
+        .stroke(Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(166, 176, 190, 104)))
         .rounding(15.0).inner_margin(Margin::same(8.0)).show(ui, add_contents);
 }
 

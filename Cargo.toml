@@ -1,12 +1,22 @@
+[workspace]
+members = [".", "Engine/timeline-core", "Engine/backend-ffi"]
+resolver = "2"
+
 [package]
-name = "glass_editor"
+name = "hanabi"
 version = "0.1.0"
 edition = "2021"
+description = "Hanabi — a glass-inspired video editor"
 
 [[bin]]
-name = "glass_editor"
+name = "hanabi"
 path = "main.rs"
 
 [dependencies]
 eframe = "0.29"
 rfd = "0.15"
+serde_json = "1"
+hanabi-engine = { path = "Engine/backend-ffi" }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+window-vibrancy = "0.7.1"

@@ -1,0 +1,7 @@
+Hanabi contains modified Rust timeline, media-decoding, WGPU-rendering, and FFmpeg export modules derived from the user-supplied current.zip project (Stella-main). The supplied source project is distributed under GNU GPL version 3; the full GPL text is in LICENSE.
+
+The C/Raylib frontend, UI headers, icon assets, and unrelated build assets were not copied.
+
+The in-process decoder uses ffmpeg-next / FFmpeg and is linked against the LGPL decode-only Windows FFmpeg SDK from martinfrancois/ffmpeg-decode-static. The Windows release package also bundles FFmpeg command-line tools from BtbN/FFmpeg-Builds; that shared build is GPL-licensed. Its upstream license/copying files are bundled in the ffmpeg folder when present.
+
+Other Rust dependencies keep their respective upstream licenses and notices.

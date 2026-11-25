@@ -1,0 +1,8 @@
+[package]
+name = "glass_editor"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+eframe = "0.29"
+rfd = "0.15"   # native file picker for the Media "+" button

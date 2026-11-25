@@ -1,4 +1,4 @@
-use eframe::egui::{self, epaint, *};
+use eframe::egui::{epaint, *};
 use std::hash::Hash;
 
 // ───────────────────────── config ─────────────────────────
@@ -182,7 +182,7 @@ impl App {
                         c + vec2(-6.0, 9.0),
                         c + vec2(9.0, 0.0),
                     ];
-                    pt.add(Shape::convex_polygon(pts, INK, Stroke::new(2.0, INK)));
+                    pt.add(Shape::convex_polygon(pts, INK, Stroke::new(2.0_f32, INK)));
                 }
             }
         }
@@ -243,8 +243,8 @@ impl App {
         // ── tab bar (neumorphic pill, acrylic tabs) ──
         let bar = Rect::from_min_size(r.min + vec2(10.0, 10.0), vec2(r.width() - 20.0, 46.0));
         pt.rect_filled(bar, 23.0, Color32::from_black_alpha(16));
-        pt.rect_stroke(bar, 23.0, Stroke::new(1.5, Color32::from_black_alpha(14)));
-        pt.rect_stroke(bar.translate(vec2(0.0, 1.0)), 23.0, Stroke::new(1.0, Color32::from_white_alpha(120)));
+        pt.rect_stroke(bar, 23.0, Stroke::new(1.5_f32, Color32::from_black_alpha(14)));
+        pt.rect_stroke(bar.translate(vec2(0.0, 1.0)), 23.0, Stroke::new(1.0_f32, Color32::from_white_alpha(120)));
 
         let tw = bar.width() / 3.0;
         let target = bar.left() + self.tab as f32 * tw;
@@ -252,7 +252,7 @@ impl App {
         let act = Rect::from_min_size(pos2(x, bar.top()), vec2(tw, bar.height())).shrink(4.0);
         shadow(&pt, act, 19.0, 3.0, 10.0, 34);
         pt.rect_filled(act, 19.0, Color32::from_white_alpha(215)); // acrylic white tint
-        pt.rect_stroke(act, 19.0, Stroke::new(1.0, Color32::WHITE));
+        pt.rect_stroke(act, 19.0, Stroke::new(1.0_f32, Color32::WHITE));
 
         for (i, name) in ["Transform", "Colors", "Media"].iter().enumerate() {
             let tr = Rect::from_min_size(pos2(bar.left() + i as f32 * tw, bar.top()), vec2(tw, bar.height()));
@@ -303,7 +303,7 @@ impl App {
             if on > 0.0 {
                 pt.rect_filled(kb, 19.0, BLUE.gamma_multiply(0.35 * on));
             }
-            pt.rect_stroke(kb, 19.0, Stroke::new(1.0, Color32::WHITE));
+            pt.rect_stroke(kb, 19.0, Stroke::new(1.0_f32, Color32::WHITE));
             let col = if self.keyframes { Color32::from_rgb(30, 90, 190) } else { INK };
             pt.text(kb.center(), Align2::CENTER_CENTER, "◆  Keyframes", FontId::proportional(15.0), col);
         }
@@ -330,14 +330,14 @@ impl App {
             let pt = ui.painter();
             let a = if open { 170 } else if resp.hovered() { 130 } else { 95 };
             pt.rect_filled(hr, 15.0, Color32::from_white_alpha(a));
-            pt.rect_stroke(hr, 15.0, Stroke::new(1.0, Color32::from_white_alpha(190)));
+            pt.rect_stroke(hr, 15.0, Stroke::new(1.0_f32, Color32::from_white_alpha(190)));
             pt.text(hr.left_center() + vec2(18.0, 0.0), Align2::CENTER_CENTER, icon, FontId::proportional(17.0), INK);
             pt.text(hr.left_center() + vec2(40.0, 0.0), Align2::LEFT_CENTER, title, FontId::proportional(15.0), INK);
             let cc = hr.right_center() - vec2(20.0, 0.0);
-            pt.circle_stroke(cc, 9.0, Stroke::new(1.0, INK_SOFT));
-            pt.line_segment([cc - vec2(4.0, 0.0), cc + vec2(4.0, 0.0)], Stroke::new(1.3, INK_SOFT));
+            pt.circle_stroke(cc, 9.0, Stroke::new(1.0_f32, INK_SOFT));
+            pt.line_segment([cc - vec2(4.0, 0.0), cc + vec2(4.0, 0.0)], Stroke::new(1.3_f32, INK_SOFT));
             if !open {
-                pt.line_segment([cc - vec2(0.0, 4.0), cc + vec2(0.0, 4.0)], Stroke::new(1.3, INK_SOFT));
+                pt.line_segment([cc - vec2(0.0, 4.0), cc + vec2(0.0, 4.0)], Stroke::new(1.3_f32, INK_SOFT));
             }
             ui.add_space(4.0);
 
@@ -345,7 +345,7 @@ impl App {
                 Frame::none()
                     .fill(Color32::from_white_alpha(70))
                     .rounding(15.0)
-                    .stroke(Stroke::new(1.0, Color32::from_white_alpha(150)))
+                    .stroke(Stroke::new(1.0_f32, Color32::from_white_alpha(150)))
                     .inner_margin(Margin::symmetric(10.0, 6.0))
                     .show(ui, |ui| {
                         let w = ui.available_width();
@@ -384,9 +384,9 @@ impl App {
             let pt = ui.painter();
             shadow(pt, br, 18.0, 3.0, 9.0, 30);
             pt.circle_filled(c, 17.0 + hot, Color32::from_white_alpha(215));
-            pt.circle_stroke(c, 17.0 + hot, Stroke::new(1.0, Color32::WHITE));
-            pt.line_segment([c - vec2(6.0, 0.0), c + vec2(6.0, 0.0)], Stroke::new(2.0, INK));
-            pt.line_segment([c - vec2(0.0, 6.0), c + vec2(0.0, 6.0)], Stroke::new(2.0, INK));
+            pt.circle_stroke(c, 17.0 + hot, Stroke::new(1.0_f32, Color32::WHITE));
+            pt.line_segment([c - vec2(6.0, 0.0), c + vec2(6.0, 0.0)], Stroke::new(2.0_f32, INK));
+            pt.line_segment([c - vec2(0.0, 6.0), c + vec2(0.0, 6.0)], Stroke::new(2.0_f32, INK));
         }
         if resp.clicked() {
             if let Some(files) = rfd::FileDialog::new()
@@ -417,7 +417,7 @@ impl App {
             let a = if sel { 190 } else if rs.hovered() { 130 } else { 90 };
             let pt = ui.painter();
             pt.rect_filled(rr, 13.0, Color32::from_white_alpha(a));
-            pt.rect_stroke(rr, 13.0, Stroke::new(1.0, Color32::from_white_alpha(180)));
+            pt.rect_stroke(rr, 13.0, Stroke::new(1.0_f32, Color32::from_white_alpha(180)));
             let mut name = self.media[i].clone();
             if name.chars().count() > 30 {
                 name = name.chars().take(28).collect::<String>() + "…";
@@ -434,7 +434,7 @@ impl App {
         let head_w = 58.0;
         let head = Rect::from_min_max(r.min, pos2(r.left() + head_w, r.bottom())).shrink2(vec2(6.0, 6.0));
         pt.rect_filled(head, 14.0, Color32::from_white_alpha(120));
-        pt.rect_stroke(head, 14.0, Stroke::new(1.0, Color32::from_white_alpha(180)));
+        pt.rect_stroke(head, 14.0, Stroke::new(1.0_f32, Color32::from_white_alpha(180)));
 
         let tracks = Rect::from_min_max(pos2(r.left() + head_w + 6.0, r.top() + 6.0), r.max - vec2(6.0, 6.0));
         let mid = tracks.center().y;
@@ -444,7 +444,7 @@ impl App {
         // the divider line between the two tracks
         pt.line_segment(
             [pos2(r.left() + 10.0, mid), pos2(r.right() - 10.0, mid)],
-            Stroke::new(1.5, Color32::from_rgb(170, 205, 235)),
+            Stroke::new(1.5_f32, Color32::from_rgb(170, 205, 235)),
         );
 
         // scrub by clicking / dragging in the track area
@@ -455,7 +455,7 @@ impl App {
             }
         }
         let x = tracks.left() + self.pos * tracks.width();
-        pt.line_segment([pos2(x, tracks.top()), pos2(x, tracks.bottom())], Stroke::new(2.0, BLUE));
+        pt.line_segment([pos2(x, tracks.top()), pos2(x, tracks.bottom())], Stroke::new(2.0_f32, BLUE));
         pt.circle_filled(pos2(x, tracks.top() + 4.0), 5.0, BLUE);
     }
 }
@@ -517,11 +517,11 @@ fn slider(ui: &mut Ui, rect: Rect, salt: impl Hash, v: &mut f32, prm: &Param, bi
     pt.rect_filled(track, 4.0, Color32::from_black_alpha(22));
     pt.line_segment(
         [track.left_top() + vec2(4.0, 0.5), track.right_top() + vec2(-4.0, 0.5)],
-        Stroke::new(1.0, Color32::from_black_alpha(26)),
+        Stroke::new(1.0_f32, Color32::from_black_alpha(26)),
     );
     pt.line_segment(
         [track.left_bottom() + vec2(4.0, 1.0), track.right_bottom() + vec2(-4.0, 1.0)],
-        Stroke::new(1.0, Color32::from_white_alpha(150)),
+        Stroke::new(1.0_f32, Color32::from_white_alpha(150)),
     );
 
     if grad {
@@ -552,7 +552,7 @@ fn slider(ui: &mut Ui, rect: Rect, salt: impl Hash, v: &mut f32, prm: &Param, bi
     pt.circle_filled(c + vec2(0.0, 3.0), rad + 3.0, Color32::from_black_alpha(10));
     pt.circle_filled(c + vec2(0.0, 2.0), rad + 1.0, Color32::from_black_alpha(26));
     pt.circle_filled(c, rad, Color32::WHITE);
-    pt.circle_stroke(c, rad, Stroke::new(1.0, Color32::from_black_alpha(18)));
+    pt.circle_stroke(c, rad, Stroke::new(1.0_f32, Color32::from_black_alpha(18)));
     changed
 }
 
@@ -574,8 +574,8 @@ fn shadow(p: &Painter, r: Rect, rad: f32, off: f32, blur: f32, alpha: u8) {
 fn glass(p: &Painter, r: Rect, rad: f32, fill: Color32) {
     shadow(p, r, rad, 8.0, 26.0, 30);
     p.rect_filled(r, rad, fill);
-    p.rect_stroke(r, rad, Stroke::new(1.0, Color32::from_white_alpha(170)));
-    p.rect_stroke(r.shrink(1.0), rad - 1.0, Stroke::new(1.0, Color32::from_black_alpha(8)));
+    p.rect_stroke(r, rad, Stroke::new(1.0_f32, Color32::from_white_alpha(170)));
+    p.rect_stroke(r.shrink(1.0), rad - 1.0, Stroke::new(1.0_f32, Color32::from_black_alpha(8)));
 }
 
 fn draw_backdrop(p: &Painter, r: Rect) {

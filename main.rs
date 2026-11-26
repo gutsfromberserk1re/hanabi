@@ -87,6 +87,11 @@ const ROW_H: f32 = 42.0;
 // ───────────────────────── app ─────────────────────────
 
 struct App {
+    logo: Option<TextureHandle>,
+    project_title: String,
+    export_open: bool,
+    exp_quality: usize, // 0 = low, 1 = high
+    exp_fps: usize,     // 0 = 30 fps, 1 = 60 fps
     tab: usize,
     tool: usize,
     playing: bool,
@@ -105,7 +110,18 @@ struct App {
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         cc.egui_ctx.set_visuals(Visuals::light());
+        // logo.png sits next to main.rs and is embedded in the exe at compile time
+        let logo = image::load_from_memory(include_bytes!("logo.png")).ok().map(|img| {
+            let img = img.resize(96, 96, image::imageops::FilterType::Lanczos3).to_rgba8();
+            let size = [img.width() as usize, img.height() as usize];
+            cc.egui_ctx.load_texture("logo", ColorImage::from_rgba_unmultiplied(size, img.as_raw()), TextureOptions::LINEAR)
+        });
         Self {
+            logo,
+            project_title: "Untitled project".to_string(),
+            export_open: false,
+            exp_quality: 1,
+            exp_fps: 0,
             tab: 0,
             tool: 0,
             playing: false,
@@ -123,6 +139,11 @@ impl App {
             media: vec![],
             selected_media: None,
         }
+    }
+
+    /// export button handler. presets: exp_quality 0/1 = low/high, exp_fps 0/1 = 30/60.
+    fn start_export(&mut self) {
+        // TODO: hand (self.exp_quality, self.exp_fps) to the export backend
     }
 
     fn key_at_pos(&self) -> Option<usize> {
@@ -184,6 +205,10 @@ impl eframe::App for App {
             self.right_ui(ui, right);
             self.timeline_ui(ui, timeline);
         });
+
+        if self.export_open {
+            self.export_modal(ctx);
+        }
     }
 }
 
@@ -205,7 +230,37 @@ impl App {
             ctx.send_viewport_cmd(ViewportCommand::Maximized(!max));
         }
 
-        pt.text(pos2(r.left() + 24.0, r.center().y), Align2::LEFT_CENTER, "Hanabi", FontId::proportional(15.0), INK);
+        // logo · Hanabi | project title
+        let mut x = r.left() + 24.0;
+        if let Some(tex) = &self.logo {
+            let lr = Rect::from_center_size(pos2(x + 13.0, r.center().y), vec2(26.0, 26.0));
+            pt.image(tex.id(), lr, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+            x += 26.0 + 10.0;
+        }
+        let name = pt.text(pos2(x, r.center().y), Align2::LEFT_CENTER, "Hanabi", FontId::proportional(15.0), INK);
+        let sep_x = name.right() + 12.0;
+        pt.line_segment([pos2(sep_x, r.center().y - 8.0), pos2(sep_x, r.center().y + 8.0)], Stroke::new(1.0_f32, in_dark()));
+        pt.text(pos2(sep_x + 12.0, r.center().y), Align2::LEFT_CENTER, &self.project_title, FontId::proportional(14.0), INK_SOFT);
+
+        // export button, just left of the window buttons
+        let ex = Rect::from_center_size(pos2(r.right() - 187.0, r.center().y), vec2(92.0, 32.0));
+        let eresp = ui.interact(ex, ui.id().with("exportbtn"), Sense::click()).on_hover_cursor(CursorIcon::PointingHand);
+        let ehot = ctx.animate_bool_with_time(eresp.id.with("hot"), eresp.hovered(), 0.12);
+        raised(&pt, ex, 16.0, 3.5 + ehot);
+        {
+            // little "send out of a tray" icon
+            let ic = pos2(ex.left() + 22.0, ex.center().y);
+            let st = Stroke::new(1.7_f32, BLUE);
+            pt.line_segment([ic + vec2(0.0, 4.0), ic + vec2(0.0, -5.0)], st);
+            pt.add(Shape::convex_polygon(vec![ic + vec2(0.0, -8.0), ic + vec2(-3.6, -4.0), ic + vec2(3.6, -4.0)], BLUE, Stroke::NONE));
+            pt.line_segment([ic + vec2(-6.0, 1.0), ic + vec2(-6.0, 7.0)], st);
+            pt.line_segment([ic + vec2(-6.0, 7.0), ic + vec2(6.0, 7.0)], st);
+            pt.line_segment([ic + vec2(6.0, 7.0), ic + vec2(6.0, 1.0)], st);
+        }
+        pt.text(pos2(ex.left() + 38.0, ex.center().y), Align2::LEFT_CENTER, "Export", FontId::proportional(14.0), INK);
+        if eresp.clicked() {
+            self.export_open = true;
+        }
 
         let ink = INK_SOFT;
         let st = Stroke::new(1.7_f32, ink);
@@ -234,6 +289,75 @@ impl App {
         pt.line_segment([c + vec2(-5.0, 2.5), c + vec2(5.0, 2.5)], st);
         if minb.clicked() {
             ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
+        }
+    }
+
+    /// centred popup: quality + frame-rate presets, then Export
+    fn export_modal(&mut self, ctx: &Context) {
+        let full = ctx.screen_rect();
+        let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+        let win_rad = if maximized { 0.0 } else { 24.0 };
+        let popup = Rect::from_center_size(full.center(), vec2(400.0, 360.0));
+        let (mut close, mut go) = (false, false);
+
+        Area::new(Id::new("export_modal"))
+            .order(Order::Foreground)
+            .fixed_pos(full.min)
+            .show(ctx, |ui| {
+                ui.set_clip_rect(full);
+                let p = ui.painter().clone();
+
+                // scrim; registered first so everything on the popup wins the hit-test
+                let scrim = ui.interact(full, Id::new("export_scrim"), Sense::click());
+                p.rect_filled(full, win_rad, Color32::from_black_alpha(80));
+                if scrim.clicked() {
+                    if let Some(pos) = scrim.interact_pointer_pos() {
+                        if !popup.contains(pos) {
+                            close = true;
+                        }
+                    }
+                }
+
+                raised(&p, popup, 26.0, 10.0);
+                let l = popup.left() + 28.0;
+                p.text(pos2(l, popup.top() + 36.0), Align2::LEFT_CENTER, "Export", FontId::proportional(21.0), INK);
+                p.text(pos2(l, popup.top() + 62.0), Align2::LEFT_CENTER, &self.project_title, FontId::proportional(13.0), INK_SOFT);
+
+                let xc = pos2(popup.right() - 38.0, popup.top() + 40.0);
+                let xr = round_btn(ui, xc, 15.0, "export_close", false);
+                let xs = Stroke::new(1.7_f32, INK_SOFT);
+                p.line_segment([xc + vec2(-4.5, -4.5), xc + vec2(4.5, 4.5)], xs);
+                p.line_segment([xc + vec2(-4.5, 4.5), xc + vec2(4.5, -4.5)], xs);
+                if xr.clicked() {
+                    close = true;
+                }
+
+                let seg_w = popup.width() - 56.0;
+                p.text(pos2(l + 6.0, popup.top() + 102.0), Align2::LEFT_CENTER, "Quality", FontId::proportional(13.0), INK_SOFT);
+                segmented(ui, Rect::from_min_size(pos2(l, popup.top() + 118.0), vec2(seg_w, 48.0)), "exp_q", &["Low", "High"], &mut self.exp_quality);
+                p.text(pos2(l + 6.0, popup.top() + 192.0), Align2::LEFT_CENTER, "Frame rate", FontId::proportional(13.0), INK_SOFT);
+                segmented(ui, Rect::from_min_size(pos2(l, popup.top() + 208.0), vec2(seg_w, 48.0)), "exp_f", &["Low · 30 fps", "High · 60 fps"], &mut self.exp_fps);
+
+                // primary action: filled blue pill
+                let eb = Rect::from_center_size(pos2(popup.center().x, popup.bottom() - 54.0), vec2(190.0, 46.0));
+                let er = ui.interact(eb, Id::new("export_go"), Sense::click()).on_hover_cursor(CursorIcon::PointingHand);
+                let hot = ui.ctx().animate_bool_with_time(Id::new("export_go_hot"), er.hovered(), 0.12);
+                let fill = Color32::from_rgb((96.0 + 16.0 * hot) as u8, (165.0 + 10.0 * hot) as u8, 255);
+                raised_fill(&p, eb, 23.0, 4.5, fill);
+                p.text(eb.center(), Align2::CENTER_CENTER, "Export", FontId::proportional(16.0), Color32::WHITE);
+                if er.clicked() {
+                    go = true;
+                }
+            });
+
+        if ctx.input(|i| i.key_pressed(Key::Escape)) {
+            close = true;
+        }
+        if go {
+            self.start_export();
+            self.export_open = false;
+        } else if close {
+            self.export_open = false;
         }
     }
 
@@ -634,6 +758,27 @@ impl App {
 
 // ───────────────────────── widgets ─────────────────────────
 
+/// recessed track with a raised sliding thumb (same look as the tab bar)
+fn segmented(ui: &mut Ui, rect: Rect, id: impl Hash, labels: &[&str], sel: &mut usize) {
+    let p = ui.painter().clone();
+    let base = ui.id().with(id);
+    pressed(&p, rect, rect.height() / 2.0, 4.0);
+    let w = rect.width() / labels.len() as f32;
+    let target = rect.left() + *sel as f32 * w;
+    let x = ui.ctx().animate_value_with_time(base.with("x"), target, 0.16);
+    let act = Rect::from_min_size(pos2(x, rect.top()), vec2(w, rect.height())).shrink(5.0);
+    raised(&p, act, act.height() / 2.0, 5.0);
+    for (i, label) in labels.iter().enumerate() {
+        let tr = Rect::from_min_size(pos2(rect.left() + i as f32 * w, rect.top()), vec2(w, rect.height()));
+        let resp = ui.interact(tr, base.with(i), Sense::click()).on_hover_cursor(CursorIcon::PointingHand);
+        if resp.clicked() {
+            *sel = i;
+        }
+        let col = if *sel == i { INK } else { INK_SOFT };
+        p.text(tr.center(), Align2::CENTER_CENTER, *label, FontId::proportional(15.0), col);
+    }
+}
+
 /// round neumorphic icon button. `active` = pressed in. caller paints the icon.
 fn round_btn(ui: &mut Ui, c: Pos2, rad: f32, id: impl Hash, active: bool) -> Response {
     let rect = Rect::from_center_size(c, vec2(rad * 2.0, rad * 2.0));
@@ -756,7 +901,7 @@ fn raised(p: &Painter, r: Rect, rad: f32, d: f32) {
 fn rrect_points(r: Rect, rad: f32) -> Vec<Pos2> {
     use std::f32::consts::{FRAC_PI_2, PI};
     let rad = rad.min(r.width() / 2.0).min(r.height() / 2.0).max(0.0);
-    let steps = 5;
+    let steps = 8;
     let corners = [
         (pos2(r.left() + rad, r.top() + rad), PI),
         (pos2(r.right() - rad, r.top() + rad), PI + FRAC_PI_2),
@@ -773,23 +918,31 @@ fn rrect_points(r: Rect, rad: f32) -> Vec<Pos2> {
     pts
 }
 
-/// recessed surface: slightly darker fill + a soft inner shade that follows the
-/// rounded outline all the way round, strongest at the top and fading to nothing
-/// at the bottom, so it blends into the shape with no hard ends or corner boxes
+/// recessed surface: slightly darker fill plus ONE gradient mesh hugging the inside of the
+/// rounded outline (dark at the top edge, fading to nothing toward the centre and bottom).
+/// A single smooth mesh has no segment joints, so there are no tick marks along the edge.
 fn pressed(p: &Painter, r: Rect, rad: f32, d: f32) {
     p.rect_filled(r, rad, Color32::from_black_alpha(16));
-    let n = (d * 1.2).ceil().clamp(2.0, 4.0) as i32;
-    for k in 0..n {
-        let inset = k as f32 + 1.0;
-        let pts = rrect_points(r.shrink(inset), (rad - inset).max(0.0));
-        let fade = 1.0 - k as f32 / n as f32;
-        for i in 0..pts.len() {
-            let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
-            let ty = (((a.y + b.y) * 0.5 - r.top()) / r.height().max(1.0)).clamp(0.0, 1.0);
-            let alpha = 46.0 * fade * (1.0 - 0.8 * ty);
-            p.line_segment([a, b], Stroke::new(1.2_f32, Color32::from_rgba_unmultiplied(40, 52, 80, alpha as u8)));
-        }
+    let depth = (d * 1.8).clamp(2.5, 8.0).min(r.height() / 2.0 - 0.5).max(1.0);
+    let outer = rrect_points(r, rad);
+    let inner = rrect_points(r.shrink(depth), (rad - depth).max(0.0));
+    let n = outer.len();
+    let mut m = Mesh::default();
+    for q in &outer {
+        let ty = ((q.y - r.top()) / r.height().max(1.0)).clamp(0.0, 1.0);
+        let a = 58.0 * (1.0 - ty) + 8.0 * ty;
+        m.colored_vertex(*q, Color32::from_rgba_unmultiplied(40, 52, 80, a as u8));
     }
+    for q in &inner {
+        m.colored_vertex(*q, Color32::from_rgba_unmultiplied(40, 52, 80, 0));
+    }
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let (o0, o1, i0, i1) = (i as u32, j as u32, (n + i) as u32, (n + j) as u32);
+        m.add_triangle(o0, o1, i1);
+        m.add_triangle(o0, i1, i0);
+    }
+    p.add(Shape::mesh(m));
 }
 
 fn diamond(p: &Painter, c: Pos2, s: f32, col: Color32, filled: bool) {

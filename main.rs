@@ -12,21 +12,16 @@ const DURATION: f32 = 30.0; // seconds, demo only
 const INK: Color32 = Color32::from_rgb(38, 42, 52);
 const INK_SOFT: Color32 = Color32::from_rgb(110, 116, 128);
 const BLUE: Color32 = Color32::from_rgb(96, 165, 255);
-/// one flat surface colour: panels, buttons and the backdrop are all this,
-/// depth comes only from the light/dark shadow pair (classic neumorphism)
-const BG: Color32 = Color32::from_rgb(222, 226, 233);
+/// flat backdrop colour. depth comes from drop shadows only (no highlights)
+const BG: Color32 = Color32::from_rgb(208, 213, 222);
+/// panels / buttons sit a touch lighter than the backdrop and cast a drop shadow
+const SURFACE: Color32 = Color32::from_rgb(224, 228, 235);
 
 fn sh_dark() -> Color32 {
-    Color32::from_rgba_unmultiplied(150, 163, 186, 150)
-}
-fn sh_light() -> Color32 {
-    Color32::from_white_alpha(235)
+    Color32::from_rgba_unmultiplied(40, 52, 80, 70)
 }
 fn in_dark() -> Color32 {
-    Color32::from_rgba_unmultiplied(140, 153, 176, 120)
-}
-fn in_light() -> Color32 {
-    Color32::from_white_alpha(210)
+    Color32::from_rgba_unmultiplied(40, 52, 80, 55)
 }
 
 // ───────────────────────── params ─────────────────────────
@@ -371,7 +366,7 @@ impl App {
         let pt = ui.painter().clone();
         raised(&pt, r, 24.0, 8.0);
 
-        // ── tab bar: deep recessed track, raised bevelled active tab ──
+        // ── tab bar: recessed track, raised active tab ──
         let bar = Rect::from_min_size(r.min + vec2(12.0, 12.0), vec2(r.width() - 24.0, 48.0));
         pressed(&pt, bar, 24.0, 4.5);
 
@@ -380,10 +375,6 @@ impl App {
         let x = ui.ctx().animate_value_with_time(ui.id().with("tabx"), target, 0.18);
         let act = Rect::from_min_size(pos2(x, bar.top()), vec2(tw, bar.height())).shrink(5.0);
         raised(&pt, act, 19.0, 5.0);
-        // bevel: lit top-left rim, shaded bottom-right rim
-        let rim = pt.with_clip_rect(act.intersect(pt.clip_rect()));
-        rim.rect_stroke(act.translate(vec2(-0.5, -0.5)), 19.0, Stroke::new(1.5_f32, Color32::from_white_alpha(230)));
-        rim.rect_stroke(act.translate(vec2(1.5, 1.5)), 19.0, Stroke::new(1.5_f32, Color32::from_rgba_unmultiplied(150, 163, 186, 70)));
 
         for (i, name) in ["Transform", "Colors", "Media"].iter().enumerate() {
             let tr = Rect::from_min_size(pos2(bar.left() + i as f32 * tw, bar.top()), vec2(tw, bar.height()));
@@ -579,9 +570,8 @@ impl App {
         pt.text(pos2(head.center().x, (head.top() + mid) / 2.0), Align2::CENTER_CENTER, "V1", FontId::proportional(13.0), INK_SOFT);
         pt.text(pos2(head.center().x, (mid + head.bottom()) / 2.0), Align2::CENTER_CENTER, "A1", FontId::proportional(13.0), INK_SOFT);
 
-        // divider between the two tracks: engraved groove
+        // divider between the two tracks
         pt.line_segment([pos2(tracks.left() + 10.0, mid), pos2(tracks.right() - 10.0, mid)], Stroke::new(1.0_f32, in_dark()));
-        pt.line_segment([pos2(tracks.left() + 10.0, mid + 1.0), pos2(tracks.right() - 10.0, mid + 1.0)], Stroke::new(1.0_f32, in_light()));
 
         // scrub by clicking / dragging in the track area
         let resp = ui.interact(tracks, ui.id().with("scrub"), Sense::click_and_drag());
@@ -702,31 +692,29 @@ fn slider(ui: &mut Ui, rect: Rect, salt: impl Hash, v: &mut f32, prm: &Param, bi
     let c = pos2(kx, cy);
     let rad = kr + hot * 1.0;
     let kn = Rect::from_center_size(c, vec2(rad * 2.0, rad * 2.0));
-    raised_fill(pt, kn, rad, 2.5, Color32::from_rgb(232, 236, 242));
-    pt.circle_stroke(c, rad - 0.5, Stroke::new(1.0_f32, Color32::from_white_alpha(160)));
+    raised_fill(pt, kn, rad, 2.5, Color32::from_rgb(240, 243, 248));
     changed
 }
 
 // ───────────────────────── neumorphic paint helpers ─────────────────────────
 
-/// raised surface: light shadow top-left, dark shadow bottom-right, flat fill
+/// raised surface: soft drop shadow below, flat fill, no highlight
 fn raised_fill(p: &Painter, r: Rect, rad: f32, d: f32, fill: Color32) {
-    p.add(epaint::Shadow { offset: vec2(d, d), blur: d * 2.4, spread: 0.0, color: sh_dark() }.as_shape(r, rad));
-    p.add(epaint::Shadow { offset: vec2(-d, -d), blur: d * 2.4, spread: 0.0, color: sh_light() }.as_shape(r, rad));
+    // wide soft shadow + a tight one so the edge stays defined
+    p.add(epaint::Shadow { offset: vec2(0.0, d * 1.4), blur: d * 3.2, spread: 0.0, color: sh_dark() }.as_shape(r, rad));
+    p.add(epaint::Shadow { offset: vec2(0.0, d * 0.4), blur: d * 1.2, spread: 0.0, color: Color32::from_black_alpha(26) }.as_shape(r, rad));
     p.rect_filled(r, rad, fill);
 }
 
 fn raised(p: &Painter, r: Rect, rad: f32, d: f32) {
-    raised_fill(p, r, rad, d, BG);
+    raised_fill(p, r, rad, d, SURFACE);
 }
 
-/// recessed surface: shade on the top-left inner edge, light on the bottom-right
+/// recessed surface: slightly darker fill with a soft shade along the top edge
 fn pressed(p: &Painter, r: Rect, rad: f32, d: f32) {
-    p.rect_filled(r, rad, Color32::from_black_alpha(9));
+    p.rect_filled(r, rad, Color32::from_black_alpha(16));
     let cp = p.with_clip_rect(r.intersect(p.clip_rect()));
-    let (w, o) = (d * 1.6, d * 0.8);
-    cp.rect_stroke(r.translate(vec2(o, o)), rad, Stroke::new(w, in_dark()));
-    cp.rect_stroke(r.translate(vec2(-o, -o)), rad, Stroke::new(w, in_light()));
+    cp.rect_stroke(r.translate(vec2(0.0, d * 0.8)), rad, Stroke::new(d * 1.6, in_dark()));
 }
 
 fn diamond(p: &Painter, c: Pos2, s: f32, col: Color32, filled: bool) {

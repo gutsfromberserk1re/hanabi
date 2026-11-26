@@ -1,1133 +1,861 @@
-mod engine;
-
 use eframe::egui::{epaint, *};
-use serde_json::{json, Value};
-use std::{collections::HashMap, time::{Duration, Instant, SystemTime, UNIX_EPOCH}};
+use std::hash::Hash;
 
-const INK: Color32 = Color32::from_rgb(38, 43, 54);
-const INK_SOFT: Color32 = Color32::from_rgb(112, 119, 132);
-const BLUE: Color32 = Color32::from_rgb(91, 153, 238);
-fn panel() -> Color32 { Color32::from_rgba_unmultiplied(250, 252, 255, 154) }
-fn panel_edge() -> Color32 { Color32::from_rgba_unmultiplied(255, 255, 255, 218) }
-fn soft_edge() -> Color32 { Color32::from_rgba_unmultiplied(153, 166, 185, 76) }
-const MIN_PROJECT_SECONDS: f64 = 60.0;
-const PREVIEW_FPS: u64 = 30;
+// ───────────────────────── config ─────────────────────────
 
-#[derive(Clone)]
-struct MediaItem {
-    path: String,
-    name: String,
-    kind: String,
-    duration: f64,
-    has_audio: bool,
-    thumbnail: Option<String>,
-    waveform: Option<String>,
+/// true  = paint a pastel backdrop so the glass has something to "frost"
+/// false = fully transparent window (desktop shows through). For a REAL OS blur
+///         behind the window add the `window-vibrancy` crate and apply it at startup.
+const FAKE_BACKDROP: bool = true;
+const DURATION: f32 = 30.0; // seconds, demo only
+
+const INK: Color32 = Color32::from_rgb(38, 42, 52);
+const INK_SOFT: Color32 = Color32::from_rgb(110, 116, 128);
+const BLUE: Color32 = Color32::from_rgb(96, 165, 255);
+
+// ───────────────────────── params ─────────────────────────
+
+#[derive(Clone, Copy)]
+struct Param {
+    name: &'static str,
+    min: f32,
+    max: f32,
+    def: f32,
+    unit: &'static str,
+}
+const fn p(name: &'static str, min: f32, max: f32, def: f32, unit: &'static str) -> Param {
+    Param { name, min, max, def, unit }
 }
 
-#[derive(Clone)]
-enum PendingTask {
-    Inspect { path: String },
-    Preview,
-    Export { path: String },
-}
+const T_PARAMS: [Param; 6] = [
+    p("Position X", -1920.0, 1920.0, 0.0, "px"),
+    p("Position Y", -1080.0, 1080.0, 0.0, "px"),
+    p("Scale", 0.0, 400.0, 100.0, "%"),
+    p("Rotation", -180.0, 180.0, 0.0, "°"),
+    p("Opacity", 0.0, 100.0, 100.0, "%"),
+    p("Speed", 0.1, 4.0, 1.0, "x"),
+];
 
-struct HanabiApp {
-    timeline: Value,
-    media: Vec<MediaItem>,
-    selected_media: Option<usize>,
-    selected_clip: Option<String>,
-    inspector_tab: usize,
+const LIGHT: [Param; 7] = [
+    p("Exposure", -100.0, 100.0, 0.0, ""),
+    p("Brightness", -100.0, 100.0, 0.0, ""),
+    p("Contrast", -100.0, 100.0, 0.0, ""),
+    p("Highlights", -100.0, 100.0, 0.0, ""),
+    p("Shadows", -100.0, 100.0, 0.0, ""),
+    p("Whites", -100.0, 100.0, 0.0, ""),
+    p("Blacks", -100.0, 100.0, 0.0, ""),
+];
+const COLOR: [Param; 3] = [
+    p("Temperature", -100.0, 100.0, 0.0, ""),
+    p("Vibrance", -100.0, 100.0, 0.0, ""),
+    p("Saturation", -100.0, 100.0, 0.0, ""),
+];
+const DETAIL: [Param; 3] = [
+    p("Sharpness", 0.0, 100.0, 0.0, ""),
+    p("Clarity", -100.0, 100.0, 0.0, ""),
+    p("Vignette", -100.0, 100.0, 0.0, ""),
+];
+const SECTIONS: [(&str, &str, &[Param]); 3] = [
+    ("Light", "☀", &LIGHT),
+    ("Color", "💧", &COLOR),
+    ("Detail", "▲", &DETAIL),
+];
+
+// ───────────────────────── app ─────────────────────────
+
+struct App {
+    tab: usize,
     tool: usize,
-    playhead: f64,
     playing: bool,
-    preview_dirty: bool,
-    preview_pending: bool,
-    last_preview_request: Instant,
-    preview_texture: Option<TextureHandle>,
-    preview_message: String,
-    tasks: HashMap<u64, PendingTask>,
-    exporting: bool,
-    show_keyframes: bool,
-    section_open: [bool; 4],
-    status: String,
-    status_until: Instant,
-    last_playback_tick: Instant,
+    pos: f32, // 0..1
+    transform: Vec<f32>,
+    colors: Vec<Vec<f32>>,
+    open: [bool; 3],
+    keyframes: bool,
+    media: Vec<String>,
+    selected_media: Option<usize>,
+    logo: Option<TextureHandle>,
+    project_name: String,
+    export_target: Option<String>,
 }
 
-impl HanabiApp {
+impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let mut visuals = Visuals::light();
-        visuals.window_fill = Color32::TRANSPARENT;
-        visuals.panel_fill = Color32::TRANSPARENT;
-        // Keep the native window transparent so Windows Acrylic can provide
-        // the blurred backdrop. These colors are only subtle tints, not a
-        // painted opaque canvas behind the editor.
-        visuals.extreme_bg_color = Color32::from_rgba_unmultiplied(248, 250, 253, 28);
-        visuals.faint_bg_color = Color32::from_rgba_unmultiplied(248, 250, 253, 18);
-        visuals.selection.bg_fill = BLUE;
-        visuals.selection.stroke = Stroke::new(1.0_f32, Color32::from_rgb(58, 112, 194));
-        visuals.widgets.noninteractive.bg_fill = Color32::from_white_alpha(90);
-        visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, soft_edge());
-        visuals.widgets.inactive.bg_fill = Color32::from_rgba_unmultiplied(242, 244, 247, 220);
-        visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, Color32::from_white_alpha(225));
-        visuals.widgets.hovered.bg_fill = Color32::from_rgba_unmultiplied(255, 255, 255, 246);
-        visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(193, 205, 222));
-        visuals.widgets.active.bg_fill = Color32::from_rgb(226, 237, 252);
-        cc.egui_ctx.set_visuals(visuals);
-
-        // Windows Acrylic supplies the real blurred backdrop. The UI itself is
-        // a neutral white-tinted glass surface and never paints the old gradient.
-        #[cfg(target_os = "windows")]
-        let _ = window_vibrancy::apply_acrylic(cc, Some((247, 249, 253, 148)));
-
-        let timeline = engine::request(json!({"command":"timeline_get"})).unwrap_or_else(|error| {
-            eprintln!("Hanabi engine initialization: {error}");
-            empty_timeline()
-        });
+        let logo = load_hanabi_logo(&cc.egui_ctx);
         Self {
-            timeline,
-            media: Vec::new(),
-            selected_media: None,
-            selected_clip: None,
-            inspector_tab: 0,
+            tab: 0,
             tool: 2,
-            playhead: 0.0,
             playing: false,
-            preview_dirty: true,
-            preview_pending: false,
-            last_preview_request: Instant::now() - Duration::from_secs(1),
-            preview_texture: None,
-            preview_message: "Import a video or image to begin".into(),
-            tasks: HashMap::new(),
-            exporting: false,
-            show_keyframes: true,
-            section_open: [true, true, false, true],
-            status: "Ready".into(),
-            status_until: Instant::now() + Duration::from_secs(2),
-            last_playback_tick: Instant::now(),
+            pos: 0.0,
+            transform: T_PARAMS.iter().map(|p| p.def).collect(),
+            colors: SECTIONS
+                .iter()
+                .map(|s| s.2.iter().map(|p| p.def).collect())
+                .collect(),
+            open: [true, false, false],
+            keyframes: false,
+            media: vec![],
+            selected_media: None,
+            logo,
+            project_name: "Untitled Project".to_owned(),
+            export_target: None,
         }
-    }
-
-    fn toast(&mut self, message: impl Into<String>) {
-        self.status = message.into();
-        self.status_until = Instant::now() + Duration::from_secs(4);
-    }
-
-    fn project_duration(&self) -> f64 {
-        let from_model = self.timeline["durationSeconds"].as_f64().unwrap_or(MIN_PROJECT_SECONDS);
-        let from_clips = self.timeline["clips"].as_array().into_iter().flatten()
-            .map(|clip| clip["start"].as_f64().unwrap_or(0.0) + clip["dur"].as_f64().unwrap_or(0.0))
-            .fold(0.0_f64, f64::max);
-        from_model.max(from_clips).max(MIN_PROJECT_SECONDS)
-    }
-
-    fn selected_clip_value(&self) -> Option<&Value> {
-        let id = self.selected_clip.as_deref()?;
-        self.timeline["clips"].as_array()?.iter().find(|clip| clip["id"].as_str() == Some(id))
-    }
-
-    fn has_visual_clip(&self) -> bool {
-        self.timeline["clips"].as_array().is_some_and(|clips| clips.iter().any(|clip| {
-            let kind = clip["kind"].as_str().unwrap_or("video");
-            kind == "video" || kind == "image"
-        }))
-    }
-
-    fn refresh_timeline(&mut self) {
-        match engine::request(json!({"command":"timeline_get"})) {
-            Ok(timeline) => self.timeline = timeline,
-            Err(error) => self.toast(error),
-        }
-    }
-
-    fn mark_preview_dirty(&mut self) {
-        self.preview_dirty = true;
-        self.preview_message.clear();
-    }
-
-    fn queue_preview(&mut self) {
-        if !self.preview_dirty || self.preview_pending || !self.has_visual_clip() {
-            return;
-        }
-        if self.last_preview_request.elapsed() < Duration::from_millis(30) {
-            return;
-        }
-        let request = json!({
-            "command":"preview_frame",
-            "at":self.playhead,
-            "height":720,
-            "fps":PREVIEW_FPS,
-            "playing":self.playing
-        });
-        match engine::submit(request) {
-            Ok(id) => {
-                self.tasks.insert(id, PendingTask::Preview);
-                self.preview_pending = true;
-                self.preview_dirty = false;
-                self.last_preview_request = Instant::now();
-            }
-            Err(error) if error.contains("busy") || error.contains("queue") => {}
-            Err(error) => self.preview_message = error,
-        }
-    }
-
-    fn process_engine_events(&mut self, ctx: &Context) {
-        loop {
-            let event = match engine::poll() {
-                Ok(Some(event)) => event,
-                Ok(None) => break,
-                Err(error) => { self.toast(error); break; }
-            };
-            let request_id = event["requestId"].as_u64().unwrap_or(0);
-            let command = event["command"].as_str().unwrap_or_default().to_owned();
-            let task = self.tasks.remove(&request_id);
-            let ok = event["ok"].as_bool().unwrap_or(false);
-            match task {
-                Some(PendingTask::Inspect { path }) => {
-                    if !ok {
-                        self.toast(format!("Import failed: {}", event["error"].as_str().unwrap_or("Unknown media error")));
-                        continue;
-                    }
-                    let item = MediaItem {
-                        path: path.clone(),
-                        name: event["name"].as_str().unwrap_or("Media").to_owned(),
-                        kind: event["kind"].as_str().unwrap_or("video").to_owned(),
-                        duration: event["duration"].as_f64().unwrap_or(5.0).max(0.1),
-                        has_audio: event["hasAudio"].as_bool().unwrap_or(false),
-                        thumbnail: event["thumbnailPath"].as_str().map(str::to_owned),
-                        waveform: event["waveformPath"].as_str().map(str::to_owned),
-                    };
-                    self.media.push(item.clone());
-                    self.selected_media = Some(self.media.len() - 1);
-                    self.add_media_clip(&item);
-                    self.toast(format!("Imported {}", item.name));
-                }
-                Some(PendingTask::Preview) => {
-                    self.preview_pending = false;
-                    if ok {
-                        match engine::copy_preview_frame(request_id) {
-                            Ok((width, height, _at, pixels)) => {
-                                let image = ColorImage::from_rgba_unmultiplied(
-                                    [width as usize, height as usize], &pixels,
-                                );
-                                self.preview_texture = Some(ctx.load_texture(
-                                    "hanabi-preview-frame", image, TextureOptions::LINEAR,
-                                ));
-                                self.preview_message.clear();
-                            }
-                            Err(error) => self.preview_message = error,
-                        }
-                    } else {
-                        self.preview_message = event["error"].as_str().unwrap_or("Preview could not be rendered").to_owned();
-                    }
-                    if self.playing { self.preview_dirty = true; }
-                }
-                Some(PendingTask::Export { path }) => {
-                    self.exporting = false;
-                    if ok {
-                        self.toast(format!("Export complete: {}", path));
-                    } else {
-                        self.toast(format!("Export failed: {}", event["error"].as_str().unwrap_or("Unknown export error")));
-                    }
-                }
-                None if command == "generate_proxy" => {
-                    // Proxy generation is an optional background optimization.
-                }
-                None => {}
-            }
-        }
-    }
-
-    fn import_media(&mut self) {
-        let files = rfd::FileDialog::new()
-            .add_filter("Video, audio and images", &["mp4", "mov", "mkv", "avi", "webm", "m4v", "mp3", "wav", "m4a", "aac", "flac", "ogg", "png", "jpg", "jpeg", "webp", "gif"])
-            .pick_files();
-        let Some(files) = files else { return; };
-        for file in files {
-            let path = file.to_string_lossy().to_string();
-            match engine::submit(json!({"command":"inspect_media","path":path})) {
-                Ok(id) => { self.tasks.insert(id, PendingTask::Inspect { path }); }
-                Err(error) => self.toast(error),
-            }
-        }
-        self.toast("Inspecting media…");
-    }
-
-    fn add_media_clip(&mut self, item: &MediaItem) {
-        let id = format!("clip-{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos());
-        let track = if item.kind == "audio" { "a1" } else { "v1" };
-        let clip = json!({
-            "id":id,
-            "track":track,
-            "start":self.playhead,
-            "dur":item.duration,
-            "label":item.name,
-            "path":item.path,
-            "kind":item.kind,
-            "hasAudio":item.has_audio,
-            "sourceOffset":0.0,
-            "props":default_props(),
-            "keyframes":[]
-        });
-        match engine::request(json!({"command":"timeline_add_clip","clip":clip})) {
-            Ok(timeline) => {
-                self.timeline = timeline;
-                self.selected_clip = Some(id);
-                self.inspector_tab = 0;
-                self.mark_preview_dirty();
-            }
-            Err(error) => self.toast(format!("Could not add clip: {error}")),
-        }
-    }
-
-    fn add_selected_media(&mut self) {
-        let Some(index) = self.selected_media else { return; };
-        let Some(item) = self.media.get(index).cloned() else { return; };
-        self.add_media_clip(&item);
-    }
-
-    fn set_clip_property(&mut self, path: &str, value: Value, live: bool) {
-        let Some(id) = self.selected_clip.clone() else {
-            self.toast("Select a clip first");
-            return;
-        };
-        match engine::request(json!({
-            "command":"timeline_set_clip_property",
-            "id":id,
-            "path":format!("props.{path}"),
-            "value":value,
-            "live":live,
-            "at":self.playhead
-        })) {
-            Ok(result) => {
-                if !live { self.timeline = result; }
-                else if let Some(clip) = self.timeline["clips"].as_array_mut().and_then(|clips| clips.iter_mut().find(|clip| clip["id"].as_str() == Some(id.as_str()))) {
-                    set_json_path(&mut clip["props"], path, value);
-                }
-                self.mark_preview_dirty();
-            }
-            Err(error) => self.toast(error),
-        }
-    }
-
-    fn end_property_edit(&mut self) {
-        if let Ok(timeline) = engine::request(json!({"command":"timeline_end_property_edit"})) {
-            self.timeline = timeline;
-            self.mark_preview_dirty();
-        }
-    }
-
-    fn add_keyframe(&mut self) {
-        let Some(clip) = self.selected_clip_value().cloned() else {
-            self.toast("Select a clip before adding a keyframe");
-            return;
-        };
-        let id = clip["id"].as_str().unwrap_or_default();
-        let start = clip["start"].as_f64().unwrap_or(0.0);
-        let clip_end = start + clip["dur"].as_f64().unwrap_or(1.0);
-        // The renderer treats clip end as exclusive; keep the keyframe on the
-        // final visible frame instead of placing it just outside the clip.
-        let end = (clip_end - 1.0 / PREVIEW_FPS as f64).max(start);
-        let at = self.playhead.clamp(start, end);
-        // Store the full editable property snapshot, so Transform, Adjust and
-        // effect parameters all animate from one keyframe track.
-        let values = json!({"props":clip["props"].clone()});
-        match engine::request(json!({"command":"timeline_add_keyframe","id":id,"at":at,"values":values})) {
-            Ok(timeline) => {
-                self.timeline = timeline;
-                self.show_keyframes = true;
-                self.mark_preview_dirty();
-                self.toast(format!("Keyframe added at {:.2}s", at));
-            }
-            Err(error) => self.toast(error),
-        }
-    }
-
-    fn remove_keyframe_at_playhead(&mut self) {
-        let Some(clip) = self.selected_clip_value().cloned() else { return; };
-        let id = clip["id"].as_str().unwrap_or_default();
-        let Some(frames) = clip["keyframes"].as_array() else {
-            self.toast("No keyframes on this clip");
-            return;
-        };
-        let candidate = frames.iter().filter_map(|frame| frame["time"].as_f64())
-            .min_by(|a, b| (a - self.playhead).abs().total_cmp(&(b - self.playhead).abs()));
-        let Some(at) = candidate.filter(|at| (at - self.playhead).abs() <= 1.0 / PREVIEW_FPS as f64) else {
-            self.toast("No keyframe near the playhead");
-            return;
-        };
-        match engine::request(json!({"command":"timeline_delete_keyframe","id":id,"at":at})) {
-            Ok(timeline) => { self.timeline = timeline; self.mark_preview_dirty(); self.toast("Keyframe removed"); }
-            Err(error) => self.toast(error),
-        }
-    }
-
-    fn export_project(&mut self) {
-        if self.exporting { return; }
-        if !self.has_visual_clip() {
-            self.toast("Add a video or image clip before exporting");
-            return;
-        }
-        let Some(path) = rfd::FileDialog::new().add_filter("MP4 video", &["mp4"]).set_file_name("Hanabi-Export.mp4").save_file() else { return; };
-        let path = path.to_string_lossy().to_string();
-        match engine::submit(json!({
-            "command":"export_project",
-            "path":path,
-            "width":1920,
-            "height":1080,
-            "fps":30,
-            "timeline":self.timeline
-        })) {
-            Ok(id) => {
-                self.tasks.insert(id, PendingTask::Export { path });
-                self.exporting = true;
-                self.toast("Export started — rendering frames and encoding H.264…");
-            }
-            Err(error) => self.toast(error),
-        }
-    }
-
-    fn draw_titlebar(&mut self, ctx: &Context) {
-        TopBottomPanel::top("hanabi-titlebar").exact_height(36.0).frame(Frame::none()).show(ctx, |ui| {
-            let full = ui.max_rect();
-            ui.painter().rect_filled(full, 0.0, Color32::from_rgba_unmultiplied(25, 29, 36, 232));
-            let drag_rect = Rect::from_min_max(full.min, pos2(full.right() - 144.0, full.bottom()));
-            let drag = ui.interact(drag_rect, ui.id().with("window-drag"), Sense::click_and_drag());
-            if drag.drag_started_by(PointerButton::Primary) {
-                ctx.send_viewport_cmd(ViewportCommand::StartDrag);
-            }
-            if drag.double_clicked() {
-                let maximized = ctx.input(|input| input.viewport().maximized.unwrap_or(false));
-                ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
-            }
-            ui.painter().circle_filled(pos2(17.0, full.center().y), 7.0, BLUE);
-            ui.painter().circle_stroke(pos2(17.0, full.center().y), 7.0, Stroke::new(1.0_f32, Color32::WHITE));
-            ui.painter().text(pos2(32.0, full.center().y), Align2::LEFT_CENTER, "Hanabi", FontId::proportional(14.0), Color32::from_rgb(241, 244, 249));
-            ui.painter().text(pos2(92.0, full.center().y), Align2::LEFT_CENTER, "VIDEO EDITOR", FontId::proportional(9.0), Color32::from_rgb(157, 166, 180));
-
-            let button_w = 46.0;
-            for (index, glyph) in ["—", "□", "×"].iter().enumerate() {
-                let rect = Rect::from_min_size(pos2(full.right() - button_w * (3 - index) as f32, full.top()), vec2(button_w, full.height()));
-                let response = ui.interact(rect, ui.id().with(("window-button", index)), Sense::click());
-                let hover = response.hovered();
-                if hover {
-                    let fill = if index == 2 { Color32::from_rgb(220, 75, 85) } else { Color32::from_white_alpha(190) };
-                    ui.painter().rect_filled(rect.shrink2(vec2(3.0, 3.0)), 8.0, fill);
-                }
-                let col = if index == 2 && hover { Color32::WHITE } else { Color32::from_rgb(176, 185, 198) };
-                ui.painter().text(rect.center(), Align2::CENTER_CENTER, *glyph, FontId::proportional(17.0), col);
-                if response.clicked() {
-                    match index {
-                        0 => ctx.send_viewport_cmd(ViewportCommand::Minimized(true)),
-                        1 => {
-                            let maximized = ctx.input(|input| input.viewport().maximized.unwrap_or(false));
-                            ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
-                        }
-                        _ => ctx.send_viewport_cmd(ViewportCommand::Close),
-                    }
-                }
-            }
-        });
-    }
-
-    fn draw_inspector(&mut self, ctx: &Context) {
-        SidePanel::right("hanabi-inspector")
-            .default_width(350.0).min_width(310.0).max_width(430.0).resizable(true)
-            .frame(Frame::none())
-            .show(ctx, |ui| {
-                surface(ui, |ui| {
-                    let tab_h = 38.0;
-                    Frame::none()
-                        .fill(Color32::from_rgba_unmultiplied(226, 231, 239, 126))
-                        .rounding(22.0)
-                        .inner_margin(Margin::same(4.0))
-                        .show(ui, |ui| {
-                            let labels = ["Transform", "Colors", "Media"];
-                            let (strip, _) = ui.allocate_exact_size(
-                                vec2(ui.available_width(), tab_h), Sense::hover(),
-                            );
-                            let segment_w = strip.width() / labels.len() as f32;
-                            let mut responses = Vec::with_capacity(labels.len());
-                            for index in 0..labels.len() {
-                                let rect = Rect::from_min_size(
-                                    pos2(strip.left() + index as f32 * segment_w, strip.top()),
-                                    vec2(segment_w, strip.height()),
-                                );
-                                responses.push(ui.interact(
-                                    rect, ui.id().with(("hanabi-tab", index)), Sense::click(),
-                                ));
-                            }
-                            for (index, response) in responses.iter().enumerate() {
-                                if response.clicked() { self.inspector_tab = index; }
-                            }
-                            let indicator = ui.ctx().animate_value_with_time(
-                                ui.id().with("hanabi-tab-indicator"), self.inspector_tab as f32, 0.18,
-                            );
-                            let active = Rect::from_min_size(
-                                pos2(strip.left() + indicator * segment_w, strip.top()),
-                                vec2(segment_w, strip.height()),
-                            ).shrink(1.0);
-                            ui.painter().add(epaint::Shadow {
-                                offset: vec2(0.0, 2.0), blur: 7.0, spread: 0.0,
-                                color: Color32::from_black_alpha(24),
-                            }.as_shape(active, 19.0));
-                            ui.painter().rect_filled(active, 19.0, Color32::from_white_alpha(232));
-                            ui.painter().rect_stroke(active, 19.0, Stroke::new(1.0_f32, panel_edge()));
-                            for (index, label) in labels.iter().enumerate() {
-                                let rect = Rect::from_min_size(
-                                    pos2(strip.left() + index as f32 * segment_w, strip.top()),
-                                    vec2(segment_w, strip.height()),
-                                );
-                                ui.painter().text(
-                                    rect.center(), Align2::CENTER_CENTER, *label,
-                                    FontId::proportional(12.5),
-                                    if self.inspector_tab == index { INK } else { INK_SOFT },
-                                );
-                            }
-                        });
-                    ui.add_space(9.0);
-                    ScrollArea::vertical().id_salt("hanabi-inspector-scroll").auto_shrink([false, false]).show(ui, |ui| {
-                        match self.inspector_tab {
-                            0 => self.draw_transform_tab(ui),
-                            1 => self.draw_adjust_tab(ui),
-                            _ => self.draw_media_tab(ui),
-                        }
-                    });
-                });
-            });
-    }
-
-    fn draw_transform_tab(&mut self, ui: &mut Ui) {
-        let Some(clip) = self.selected_clip_value().cloned() else {
-            empty_state(ui, "Select a clip", "Import media and select a timeline clip to edit its transform.");
-            return;
-        };
-        ui.label(RichText::new(clip["label"].as_str().unwrap_or("Selected clip")).strong().color(INK));
-        ui.add_space(8.0);
-        self.property_slider(ui, "Position X", "transform.position.x", -1920.0, 1920.0, 0.0, "px");
-        self.property_slider(ui, "Position Y", "transform.position.y", -1080.0, 1080.0, 0.0, "px");
-        self.property_slider(ui, "Scale", "transform.scale.w", 1.0, 400.0, 100.0, "%");
-        self.property_slider(ui, "Rotation", "transform.rotation", -180.0, 180.0, 0.0, "°");
-        self.property_slider(ui, "Opacity", "transform.opacity", 0.0, 100.0, 100.0, "%");
-        ui.add_space(12.0);
-        section_surface(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("◇  Keyframes").strong().color(INK));
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let response = ui.checkbox(&mut self.show_keyframes, "Show");
-                    if response.changed() { self.mark_preview_dirty(); }
-                });
-            });
-            ui.add_space(7.0);
-            let count = clip["keyframes"].as_array().map_or(0, Vec::len);
-            ui.label(RichText::new(format!("{count} keyframes · playhead {:.2}s", self.playhead)).size(12.0).color(INK_SOFT));
-            ui.horizontal(|ui| {
-                if glass_button(ui, "＋ Add at playhead").clicked() { self.add_keyframe(); }
-                if glass_button(ui, "− Remove nearby").clicked() { self.remove_keyframe_at_playhead(); }
-            });
-            ui.label(RichText::new("Transform, color and effect values interpolate between keyframes in preview and export.").size(11.0).color(INK_SOFT));
-        });
-    }
-
-    fn draw_adjust_tab(&mut self, ui: &mut Ui) {
-        if self.selected_clip_value().is_none() {
-            empty_state(ui, "No clip selected", "Select a video or image clip to adjust its look and effects.");
-            return;
-        }
-        self.draw_adjust_section(ui, 0, "Light", "☼");
-        self.draw_adjust_section(ui, 1, "Color", "◉");
-        self.draw_adjust_section(ui, 2, "Detail", "◈");
-        self.draw_adjust_section(ui, 3, "Video Effects", "✧");
-    }
-
-    fn draw_adjust_section(&mut self, ui: &mut Ui, index: usize, title: &str, glyph: &str) {
-        let id = ui.id().with(("adjust-section", index));
-        let open = self.section_open[index];
-        let anim = ui.ctx().animate_bool_with_time(id, open, 0.16);
-        section_surface(ui, |ui| {
-            let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::click());
-            let response = response.on_hover_cursor(CursorIcon::PointingHand);
-            if response.clicked() { self.section_open[index] = !open; }
-            let painter = ui.painter();
-            painter.text(rect.left_center() + vec2(5.0, 0.0), Align2::LEFT_CENTER, glyph, FontId::proportional(16.0), INK);
-            painter.text(rect.left_center() + vec2(29.0, 0.0), Align2::LEFT_CENTER, title, FontId::proportional(14.0), INK);
-            let center = rect.right_center() - vec2(12.0, 0.0);
-            painter.circle_stroke(center, 8.0, Stroke::new(1.0_f32, INK_SOFT));
-            painter.line_segment([center - vec2(3.5, 0.0), center + vec2(3.5, 0.0)], Stroke::new(1.2_f32, INK_SOFT));
-            if !open { painter.line_segment([center - vec2(0.0, 3.5), center + vec2(0.0, 3.5)], Stroke::new(1.2_f32, INK_SOFT)); }
-            if anim > 0.002 {
-                // Reserve only the currently visible height, but lay out the
-                // complete contents in a clipped child. This gives the section
-                // a real short expand/collapse motion instead of popping open.
-                let target_height = match index { 0 => 336.0, 1 | 2 => 164.0, _ => 520.0 };
-                let visible_height = target_height * anim;
-                let (visible_rect, _) = ui.allocate_exact_size(
-                    vec2(ui.available_width(), visible_height), Sense::hover(),
-                );
-                let full_rect = Rect::from_min_size(
-                    visible_rect.min, vec2(visible_rect.width(), target_height),
-                );
-                let parent_clip = ui.clip_rect();
-                let mut content = ui.new_child(
-                    UiBuilder::new().max_rect(full_rect).layout(Layout::top_down(Align::Min)),
-                );
-                content.set_clip_rect(visible_rect.intersect(parent_clip));
-                content.add_space(5.0);
-                match index {
-                    0 => {
-                        self.property_slider(&mut content, "Exposure", "colors.light.exposure", -100.0, 100.0, 0.0, "");
-                        self.property_slider(&mut content, "Brightness", "colors.light.brightness", -100.0, 100.0, 0.0, "");
-                        self.property_slider(&mut content, "Contrast", "colors.light.contrast", -100.0, 100.0, 0.0, "");
-                        self.property_slider(&mut content, "Highlights", "colors.light.highlights", -100.0, 100.0, 0.0, "");
-                        self.property_slider(&mut content, "Shadows", "colors.light.shadows", -100.0, 100.0, 0.0, "");
-                        self.property_slider(&mut content, "Whites", "colors.light.whites", -100.0, 100.0, 0.0, "");
-                        self.property_slider(&mut content, "Blacks", "colors.light.blacks", -100.0, 100.0, 0.0, "");
-                    }
-                    1 => {
-                        self.property_slider(&mut content, "Temperature", "colors.color.temperature", -100.0, 100.0, 0.0, "");
-                        self.property_slider(&mut content, "Vibrance", "colors.color.vibrance", -100.0, 100.0, 0.0, "");
-                        self.property_slider(&mut content, "Saturation", "colors.color.saturation", -100.0, 100.0, 0.0, "");
-                    }
-                    2 => {
-                        self.property_slider(&mut content, "Sharpness", "colors.detail.sharpness", 0.0, 100.0, 0.0, "");
-                        self.property_slider(&mut content, "Clarity", "colors.detail.clarity", -100.0, 100.0, 0.0, "");
-                        self.property_slider(&mut content, "Vignette", "colors.detail.vignette", -100.0, 100.0, 0.0, "");
-                    }
-                    _ => self.draw_effect_controls(&mut content),
-                }
-            }
-        });
-        ui.add_space(7.0);
-    }
-
-    fn draw_effect_controls(&mut self, ui: &mut Ui) {
-        self.effect_control(ui, "Chromatic Aberration", "effects.chromatic", &[ ("Amount", "amount", 0.0, 100.0, 28.0), ("Angle", "angle", 0.0, 360.0, 0.0) ]);
-        self.effect_control(ui, "Sine Wave", "effects.wave", &[ ("Amount", "amount", 0.0, 100.0, 0.0), ("Frequency", "frequency", 1.0, 16.0, 4.0) ]);
-        self.effect_control(ui, "Swirl", "effects.swirl", &[ ("Amount", "amount", 0.0, 100.0, 0.0), ("Radius", "radius", 10.0, 95.0, 70.0) ]);
-        self.effect_control(ui, "Blur", "effects.blur", &[ ("Amount", "amount", 0.0, 100.0, 0.0) ]);
-        self.effect_control(ui, "Pixelate", "effects.pixelate", &[ ("Block size", "size", 2.0, 80.0, 12.0) ]);
-    }
-
-    fn effect_control(&mut self, ui: &mut Ui, title: &str, path: &str, params: &[(&str, &str, f32, f32, f32)]) {
-        let enabled = self.selected_clip_value().map(|clip| json_bool(&clip["props"], &format!("{path}.enabled"), false)).unwrap_or(false);
-        ui.horizontal(|ui| {
-            let mut checked = enabled;
-            if ui.checkbox(&mut checked, title).changed() {
-                self.set_clip_property(&format!("{path}.enabled"), json!(checked), false);
-            }
-        });
-        for (label, field, min, max, default) in params {
-            ui.add_enabled_ui(enabled, |ui| {
-                self.property_slider(ui, label, &format!("{path}.{field}"), *min, *max, *default, "");
-            });
-        }
-        ui.add_space(2.0);
-    }
-
-    fn draw_media_tab(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Media Library").strong().color(INK));
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if glass_button(ui, "＋ Import").clicked() { self.import_media(); }
-            });
-        });
-        ui.add_space(8.0);
-        if self.media.is_empty() {
-            empty_state(ui, "Your library is empty", "Import videos, audio or images to add them to your project.");
-            return;
-        }
-        for index in 0..self.media.len() {
-            let selected = self.selected_media == Some(index);
-            let item = self.media[index].clone();
-            Frame::none()
-                .fill(if selected { Color32::from_rgba_unmultiplied(228, 239, 255, 220) } else { Color32::from_white_alpha(115) })
-                .stroke(Stroke::new(1.0_f32, if selected { Color32::from_rgb(161, 190, 230) } else { soft_edge() }))
-                .rounding(13.0).inner_margin(Margin::same(9.0)).show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(if item.kind == "audio" { "♫" } else if item.kind == "image" { "▧" } else { "▶" });
-                        ui.vertical(|ui| {
-                            ui.label(RichText::new(&item.name).color(INK).strong());
-                            let mut flags = Vec::new();
-                            if item.has_audio { flags.push("audio"); }
-                            if item.thumbnail.is_some() { flags.push("thumbnail"); }
-                            if item.waveform.is_some() { flags.push("waveform"); }
-                            let suffix = if flags.is_empty() { String::new() } else { format!(" · {}", flags.join(" · ")) };
-                            ui.label(RichText::new(format!("{} · {:.1}s{}", item.kind, item.duration, suffix)).size(10.5).color(INK_SOFT));
-                        });
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if glass_button(ui, "Add").clicked() { self.add_media_clip(&item); }
-                            if glass_button(ui, "Select").clicked() { self.selected_media = Some(index); }
-                        });
-                    });
-                });
-            ui.add_space(6.0);
-        }
-    }
-
-    fn property_slider(&mut self, ui: &mut Ui, label: &str, path: &str, min: f32, max: f32, default: f32, unit: &str) {
-        if self.selected_clip_value().is_none() { return; }
-        let mut value = self.selected_clip_value().map(|clip| json_number(&clip["props"], path, default as f64) as f32).unwrap_or(default);
-        let response = ui.horizontal(|ui| {
-            ui.add_sized(
-                vec2(76.0, 24.0),
-                Label::new(RichText::new(label).size(12.0).color(INK)),
-            );
-            let value_width = 56.0;
-            let slider_width = (ui.available_width() - value_width - ui.spacing().item_spacing.x).max(54.0);
-            let response = ui.add_sized(
-                vec2(slider_width, 22.0),
-                Slider::new(&mut value, min..=max).show_value(false),
-            );
-            Frame::none()
-                .fill(Color32::from_rgba_unmultiplied(231, 235, 242, 150))
-                .stroke(Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 190)))
-                .rounding(12.0)
-                .inner_margin(Margin::symmetric(7.0, 4.0))
-                .show(ui, |ui| {
-                    ui.set_min_size(vec2(value_width, 23.0));
-                    ui.centered_and_justified(|ui| {
-                        ui.label(RichText::new(format!("{value:.0}{unit}")).size(11.0).color(INK_SOFT));
-                    });
-                });
-            response
-        }).inner;
-        ui.add_space(5.0);
-        if response.changed() {
-            self.set_clip_property(path, json!(value), true);
-            if path == "transform.scale.w" {
-                self.set_clip_property("transform.scale.h", json!(value), true);
-            }
-        }
-        if response.drag_stopped() {
-            self.end_property_edit();
-        }
-    }
-
-    fn draw_timeline(&mut self, ctx: &Context) {
-        TopBottomPanel::bottom("hanabi-timeline")
-            .exact_height(224.0).frame(Frame::none())
-            .show(ctx, |ui| {
-                surface(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("TIMELINE").strong().size(11.0).color(INK_SOFT));
-                        ui.label(RichText::new(format!("{} clips", self.timeline["clips"].as_array().map_or(0, Vec::len))).size(11.0).color(INK_SOFT));
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if glass_button(ui, "＋ Keyframe").clicked() { self.add_keyframe(); }
-                            let keyframes_label = if self.show_keyframes { "◆ Keyframes on" } else { "◇ Keyframes off" };
-                            if glass_button(ui, keyframes_label).clicked() { self.show_keyframes = !self.show_keyframes; }
-                        });
-                    });
-                    ui.add_space(5.0);
-                    self.timeline_canvas(ui);
-                });
-            });
-    }
-
-    fn timeline_canvas(&mut self, ui: &mut Ui) {
-        let rows: [(&str, &str); 7] = [("V1", "v1"), ("V2", "v2"), ("V3", "v3"), ("V4", "v4"), ("A1", "a1"), ("A2", "a2"), ("A3", "a3")];
-        let total_w = ui.available_width();
-        let total_h = ui.available_height().max(145.0);
-        let (canvas, _) = ui.allocate_exact_size(vec2(total_w, total_h), Sense::hover());
-        let label_w = 43.0;
-        let axis_h = 18.0;
-        let tracks = Rect::from_min_max(pos2(canvas.left() + label_w, canvas.top() + axis_h), canvas.right_bottom());
-        let row_h = tracks.height() / rows.len() as f32;
-        let duration = self.project_duration();
-        let painter = ui.painter().clone();
-        painter.rect_filled(canvas, 11.0, Color32::from_rgba_unmultiplied(250, 252, 255, 112));
-        painter.rect_stroke(canvas, 11.0, Stroke::new(1.0_f32, Color32::from_white_alpha(220)));
-
-        for second in 0..=(duration.ceil() as usize / 5) {
-            let t = second as f64 * 5.0;
-            let x = tracks.left() + (t / duration) as f32 * tracks.width();
-            painter.line_segment([pos2(x, canvas.top() + 1.0), pos2(x, tracks.bottom())], Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(130, 143, 163, 45)));
-            painter.text(pos2(x + 3.0, canvas.top() + 8.0), Align2::LEFT_CENTER, format!("{t:.0}s"), FontId::proportional(9.5), INK_SOFT);
-        }
-
-        for (index, (label, _track)) in rows.iter().enumerate() {
-            let top = tracks.top() + index as f32 * row_h;
-            let row = Rect::from_min_size(pos2(tracks.left(), top), vec2(tracks.width(), row_h));
-            if index % 2 == 0 { painter.rect_filled(row, 0.0, Color32::from_rgba_unmultiplied(255, 255, 255, 50)); }
-            painter.text(pos2(canvas.left() + 4.0, row.center().y), Align2::LEFT_CENTER, *label, FontId::proportional(10.0), INK_SOFT);
-            painter.line_segment([row.left_bottom(), row.right_bottom()], Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(145, 156, 173, 52)));
-        }
-
-        // Track background interaction provides scrubbing; clip interactions are
-        // painted on top, so dragging a block moves it rather than moving time.
-        let background_response = ui.interact(tracks, ui.id().with("timeline-scrub"), Sense::click_and_drag());
-        if background_response.clicked() || background_response.dragged() {
-            if let Some(pointer) = background_response.interact_pointer_pos() {
-                self.playhead = (((pointer.x - tracks.left()) / tracks.width()) as f64 * duration).clamp(0.0, duration);
-                self.mark_preview_dirty();
-            }
-        }
-
-        let clips = self.timeline["clips"].as_array().cloned().unwrap_or_default();
-        for clip in clips {
-            let track = clip["track"].as_str().unwrap_or("v1");
-            let Some(row_index) = rows.iter().position(|row| row.1 == track) else { continue; };
-            let start = clip["start"].as_f64().unwrap_or(0.0).max(0.0);
-            let end = start + clip["dur"].as_f64().unwrap_or(1.0).max(0.1);
-            let x0 = tracks.left() + (start / duration) as f32 * tracks.width();
-            let x1 = tracks.left() + (end / duration) as f32 * tracks.width();
-            let top = tracks.top() + row_index as f32 * row_h + 2.0;
-            let rect = Rect::from_min_max(pos2(x0, top), pos2(x1.max(x0 + 13.0), top + row_h - 4.0));
-            let id = clip["id"].as_str().unwrap_or_default().to_owned();
-            let selected = self.selected_clip.as_deref() == Some(id.as_str());
-            let response = ui.interact(rect, ui.id().with(("timeline-clip", id.clone())), Sense::click_and_drag());
-            let base = if track.starts_with('a') { Color32::from_rgb(150, 179, 209) } else { Color32::from_rgb(116, 167, 229) };
-            let fill = if selected { base } else { base.gamma_multiply(0.78) };
-            painter.rect_filled(rect, 6.0, fill);
-            painter.rect_stroke(rect, 6.0, Stroke::new(if selected { 2.0_f32 } else { 1.0_f32 }, if selected { Color32::WHITE } else { Color32::from_white_alpha(170) }));
-            painter.text(rect.left_center() + vec2(7.0, 0.0), Align2::LEFT_CENTER, clip["label"].as_str().unwrap_or("Clip"), FontId::proportional(9.5), Color32::WHITE);
-            if response.clicked() {
-                self.selected_clip = Some(id.clone());
-                self.inspector_tab = 0;
-            }
-            if response.drag_stopped() {
-                let delta = response.drag_delta().x as f64 / tracks.width() as f64 * duration;
-                let desired_start = (start + delta).max(0.0);
-                let _ = engine::request(json!({
-                    "command":"timeline_move_clip", "id":id, "start":desired_start,
-                    "track":track, "playhead":self.playhead, "snapThreshold":0.18
-                })).map(|timeline| self.timeline = timeline).map_err(|error| self.toast(error));
-                self.mark_preview_dirty();
-            }
-            if selected && self.show_keyframes {
-                if let Some(frames) = clip["keyframes"].as_array() {
-                    for frame in frames {
-                        if let Some(at) = frame["time"].as_f64() {
-                            let kx = tracks.left() + (at / duration) as f32 * tracks.width();
-                            let center = pos2(kx, rect.top() + 4.0);
-                            painter.add(Shape::convex_polygon(
-                                vec![center + vec2(0.0, -4.0), center + vec2(4.0, 0.0), center + vec2(0.0, 4.0), center + vec2(-4.0, 0.0)],
-                                Color32::from_rgb(255, 226, 139), Stroke::new(1.0_f32, Color32::from_rgb(176, 128, 35)),
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-
-        let play_x = tracks.left() + (self.playhead / duration) as f32 * tracks.width();
-        painter.line_segment([pos2(play_x, canvas.top()), pos2(play_x, tracks.bottom())], Stroke::new(1.6_f32, BLUE));
-        painter.circle_filled(pos2(play_x, tracks.top() - 2.0), 4.0, BLUE);
     }
 }
 
-impl eframe::App for HanabiApp {
-    fn clear_color(&self, _visuals: &Visuals) -> [f32; 4] { [0.0, 0.0, 0.0, 0.0] }
+impl eframe::App for App {
+    fn clear_color(&self, _v: &Visuals) -> [f32; 4] {
+        [0.0, 0.0, 0.0, 0.0] // transparent window
+    }
 
-    fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
-        self.process_engine_events(ctx);
-        let now = Instant::now();
+    fn update(&mut self, ctx: &Context, _f: &mut eframe::Frame) {
         if self.playing {
-            let dt = now.duration_since(self.last_playback_tick).as_secs_f64().min(0.1);
-            self.playhead += dt;
-            if self.playhead >= self.project_duration() {
-                self.playhead = 0.0;
+            self.pos += ctx.input(|i| i.stable_dt) / DURATION;
+            if self.pos >= 1.0 {
+                self.pos = 1.0;
+                self.playing = false;
             }
-            self.mark_preview_dirty();
+            ctx.request_repaint();
         }
-        self.last_playback_tick = now;
 
-        self.queue_preview();
-        self.draw_titlebar(ctx);
-        self.draw_timeline(ctx);
-        self.draw_inspector(ctx);
         CentralPanel::default().frame(Frame::none()).show(ctx, |ui| {
-            ui.add_space(5.0);
-            let workspace = ui.available_size();
-            let workspace_h = (workspace.y - 9.0).max(180.0);
-            let toolbar_w = 52.0;
-            let gap = 10.0;
-            let preview_w = (workspace.x - toolbar_w - gap).max(220.0);
+            let full = ui.max_rect();
+            if FAKE_BACKDROP {
+                draw_backdrop(ui.painter(), full);
+            }
 
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                // A separate floating tool rail, rather than embedding the
-                // controls inside the preview card.
-                ui.allocate_ui_with_layout(
-                    vec2(toolbar_w, workspace_h),
-                    Layout::top_down(Align::Center),
-                    |ui| {
-                        let rail_h = 154.0;
-                        ui.add_space(((workspace_h - rail_h) * 0.5).max(0.0));
-                        let rail_frame = Frame::none()
-                            .fill(Color32::from_rgba_unmultiplied(250, 252, 255, 190))
-                            .stroke(Stroke::new(1.0_f32, panel_edge()))
-                            .rounding(24.0)
-                            .inner_margin(Margin::same(5.0));
-                        rail_frame.show(ui, |ui| {
-                            ui.set_min_width(40.0);
-                            ui.vertical_centered(|ui| {
-                                for (index, glyph) in ["✂", "Aa", "▶"].iter().enumerate() {
-                                    let selected = self.tool == index;
-                                    let (rect, response) = ui.allocate_exact_size(vec2(40.0, 42.0), Sense::click());
-                                    if response.clicked() { self.tool = index; }
-                                    let t = ui.ctx().animate_bool_with_time(
-                                        ui.id().with(("tool", index)), selected || response.hovered(), 0.14,
-                                    );
-                                    if t > 0.01 {
-                                        ui.painter().add(epaint::Shadow {
-                                            offset: vec2(0.0, 2.0), blur: 7.0, spread: 0.0,
-                                            color: Color32::from_black_alpha(22),
-                                        }.as_shape(rect.shrink(2.0), 13.0));
-                                        ui.painter().rect_filled(
-                                            rect.shrink(2.0), 13.0,
-                                            Color32::from_white_alpha((112.0 + 112.0 * t) as u8),
-                                        );
-                                        ui.painter().rect_stroke(rect.shrink(2.0), 13.0, Stroke::new(1.0_f32, panel_edge()));
-                                    }
-                                    ui.painter().text(rect.center(), Align2::CENTER_CENTER, *glyph, FontId::proportional(17.0), INK);
-                                    ui.add_space(2.0);
-                                }
-                            });
-                        });
-                    },
-                );
-                ui.add_space(gap);
-                ui.allocate_ui_with_layout(
-                    vec2(preview_w, workspace_h),
-                    Layout::top_down(Align::Min),
-                    |ui| {
-                        let card_w = preview_w;
-                        let card_h = workspace_h;
-                        let card_rect = ui.available_rect_before_wrap().shrink(1.0);
-                        ui.painter().add(epaint::Shadow {
-                            offset: vec2(0.0, 5.0), blur: 18.0, spread: 0.0,
-                            color: Color32::from_black_alpha(20),
-                        }.as_shape(card_rect, 22.0));
-                        Frame::none()
-                            .fill(Color32::from_rgba_unmultiplied(250, 252, 255, 166))
-                            .stroke(Stroke::new(1.0_f32, panel_edge()))
-                            .rounding(22.0)
-                            .inner_margin(Margin::same(16.0))
-                            .show(ui, |ui| {
-                                // Force the card's content region to occupy the full
-                                // allocated width and height. This also keeps empty-state
-                                // labels centered and normally wrapped.
-                                ui.set_min_size(vec2((card_w - 32.0).max(120.0), (card_h - 32.0).max(120.0)));
-                                ui.horizontal(|ui| {
-                                    ui.label(RichText::new(format!("{} / {}", fmt_time(self.playhead), fmt_time(self.project_duration())))
-                                        .monospace().size(11.0).strong().color(INK_SOFT));
-                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                        if self.exporting {
-                                            ui.spinner();
-                                            ui.label(RichText::new("Exporting").size(11.0).color(INK_SOFT));
-                                        } else if glass_button(ui, "⇧ Export").clicked() {
-                                            self.export_project();
-                                        }
-                                    });
-                                });
+            let title_bar = Rect::from_min_max(
+                full.min + vec2(8.0, 5.0),
+                pos2(full.right() - 8.0, full.top() + 52.0),
+            );
+            self.titlebar_ui(ui, title_bar);
 
-                                ui.add_space(4.0);
-                                let inner_width = ui.available_width();
-                                let inner_height = ui.available_height();
-                                let controls_height = 76.0;
-                                let preview_height = (inner_height - controls_height - 10.0).max(120.0);
-                                ui.allocate_ui_with_layout(
-                                    vec2(inner_width, preview_height),
-                                    Layout::top_down(Align::Center),
-                                    |ui| {
-                                        ui.centered_and_justified(|ui| {
-                                            if let Some(texture) = &self.preview_texture {
-                                                let aspect = texture.size_vec2().x / texture.size_vec2().y.max(1.0);
-                                                let available = ui.available_size();
-                                                let mut size = vec2(available.x, available.x / aspect.max(0.1));
-                                                if size.y > available.y { size = vec2(available.y * aspect, available.y); }
-                                                ui.image((texture.id(), size));
-                                            } else {
-                                                ui.vertical_centered(|ui| {
-                                                    ui.label(RichText::new("Preview").size(18.0)
-                                                        .color(Color32::from_rgba_unmultiplied(120, 130, 145, 100)));
-                                                    if !self.preview_message.is_empty()
-                                                        && self.preview_message != "Import a video or image to begin"
-                                                    {
-                                                        ui.add_space(5.0);
-                                                        ui.label(RichText::new(&self.preview_message).size(11.0).color(INK_SOFT));
-                                                    }
-                                                });
-                                            }
-                                        });
-                                    },
-                                );
-                                ui.add_space(2.0);
-                                let timeline_duration = self.project_duration();
-                                let slider_response = ui.add_sized(
-                                    vec2(inner_width, 18.0),
-                                    Slider::new(&mut self.playhead, 0.0..=timeline_duration).show_value(false),
-                                );
-                                if slider_response.drag_stopped() || slider_response.clicked() {
-                                    self.mark_preview_dirty();
-                                }
-                                ui.add_space(3.0);
-                                ui.horizontal(|ui| {
-                                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                                        if glass_button(ui, "⏮").clicked() {
-                                            self.playhead = 0.0;
-                                            self.mark_preview_dirty();
-                                        }
-                                        let play_label = if self.playing { "Ⅱ Pause" } else { "▶ Play" };
-                                        if glass_button(ui, play_label).clicked() {
-                                            self.playing = !self.playing;
-                                            self.last_playback_tick = Instant::now();
-                                            self.mark_preview_dirty();
-                                        }
-                                        if glass_button(ui, "◀ Frame").clicked() {
-                                            self.playhead = (self.playhead - 1.0 / PREVIEW_FPS as f64).max(0.0);
-                                            self.mark_preview_dirty();
-                                        }
-                                        if glass_button(ui, "Frame ▶").clicked() {
-                                            self.playhead = (self.playhead + 1.0 / PREVIEW_FPS as f64).min(self.project_duration());
-                                            self.mark_preview_dirty();
-                                        }
-                                    });
-                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                        ui.label(RichText::new(format!("{} fps", PREVIEW_FPS)).size(10.0).color(INK_SOFT));
-                                    });
-                                });
-                            });
-                    },
-                );
-            });
+            let gap = 14.0;
+            let area = Rect::from_min_max(
+                pos2(full.left() + gap, title_bar.bottom() + 8.0),
+                full.max - vec2(gap, gap),
+            );
+            let tl_h = (area.height() * 0.30).max(150.0);
+            let top = Rect::from_min_max(area.min, pos2(area.right(), area.bottom() - tl_h - gap));
+            let timeline = Rect::from_min_max(pos2(area.left(), top.bottom() + gap), area.max);
+
+            let tool_w = 48.0;
+            let right_w = (area.width() * 0.27).clamp(320.0, 420.0);
+            let toolbar = Rect::from_center_size(
+                pos2(top.left() + tool_w / 2.0, top.center().y + top.height() * 0.15),
+                vec2(tool_w, 150.0),
+            );
+            let right = Rect::from_min_max(pos2(top.right() - right_w, top.top()), top.max);
+            let preview = Rect::from_min_max(
+                pos2(toolbar.right() + gap, top.top()),
+                pos2(right.left() - gap, top.bottom()),
+            );
+
+            self.toolbar_ui(ui, toolbar);
+            self.preview_ui(ui, preview);
+            self.right_ui(ui, right);
+            self.timeline_ui(ui, timeline);
         });
-        if Instant::now() < self.status_until {
-            Area::new(Id::new("hanabi-toast")).anchor(Align2::CENTER_BOTTOM, vec2(0.0, -238.0)).show(ctx, |ui| {
-                Frame::none().fill(Color32::from_rgba_unmultiplied(38, 45, 58, 226)).rounding(12.0).inner_margin(Margin::symmetric(13.0, 8.0)).show(ui, |ui| {
-                    ui.label(RichText::new(&self.status).size(11.0).color(Color32::WHITE));
-                });
+    }
+}
+
+// ───────────────────────── panels ─────────────────────────
+
+impl App {
+    fn titlebar_ui(&mut self, ui: &mut Ui, r: Rect) {
+        let painter = ui.painter().clone();
+        let dark = ui.visuals().dark_mode;
+
+        let bar_fill = if dark {
+            Color32::from_rgba_unmultiplied(28, 30, 36, 178)
+        } else {
+            Color32::from_rgba_unmultiplied(255, 255, 255, 132)
+        };
+        let edge = if dark {
+            Color32::from_white_alpha(34)
+        } else {
+            Color32::from_white_alpha(190)
+        };
+        let primary = if dark {
+            Color32::from_rgb(238, 240, 246)
+        } else {
+            INK
+        };
+        let secondary = if dark {
+            Color32::from_rgb(160, 166, 178)
+        } else {
+            INK_SOFT
+        };
+
+        shadow(&painter, r, 17.0, 3.0, 12.0, if dark { 42 } else { 20 });
+        painter.rect_filled(r, 17.0, bar_fill);
+        painter.rect_stroke(r, 17.0, Stroke::new(1.0, edge));
+
+        // macOS-style traffic lights: close, minimize, and maximize.
+        let control_y = r.center().y;
+        let controls = [
+            (Color32::from_rgb(255, 95, 86), "close"),
+            (Color32::from_rgb(255, 189, 46), "minimize"),
+            (Color32::from_rgb(39, 201, 63), "maximize"),
+        ];
+        for (i, (color, action)) in controls.iter().enumerate() {
+            let center = pos2(r.left() + 20.0 + i as f32 * 19.0, control_y);
+            let hit = Rect::from_center_size(center, vec2(16.0, 16.0));
+            let response = ui
+                .interact(hit, ui.id().with(("mac-control", i)), Sense::click())
+                .on_hover_cursor(CursorIcon::PointingHand);
+
+            painter.circle_filled(center, 6.2, *color);
+            painter.circle_stroke(
+                center,
+                6.2,
+                Stroke::new(0.8, Color32::from_black_alpha(28)),
+            );
+
+            if response.hovered() {
+                let symbol = match *action {
+                    "close" => "×",
+                    "minimize" => "−",
+                    _ => "+",
+                };
+                painter.text(
+                    center,
+                    Align2::CENTER_CENTER,
+                    symbol,
+                    FontId::proportional(10.0),
+                    Color32::from_black_alpha(150),
+                );
+            }
+
+            if response.clicked() {
+                match *action {
+                    "close" => ui.ctx().send_viewport_cmd(ViewportCommand::Close),
+                    "minimize" => {
+                        ui.ctx().send_viewport_cmd(ViewportCommand::Minimized(true))
+                    }
+                    _ => {
+                        let maximized = ui.ctx().input(|input| {
+                            input.viewport().maximized.unwrap_or(false)
+                        });
+                        ui.ctx().send_viewport_cmd(ViewportCommand::Maximized(!maximized));
+                    }
+                }
+            }
+        }
+
+        // Brand mark. Load an image from the project's logo/ folder when present.
+        let logo_rect = Rect::from_center_size(
+            pos2(r.left() + 100.0, control_y),
+            vec2(29.0, 29.0),
+        );
+        if let Some(texture) = &self.logo {
+            painter.image(
+                texture.id(),
+                logo_rect,
+                Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)),
+                Color32::WHITE,
+            );
+        } else {
+            painter.circle_filled(
+                logo_rect.center(),
+                14.0,
+                if dark {
+                    Color32::from_rgb(232, 236, 246)
+                } else {
+                    Color32::from_rgb(45, 51, 66)
+                },
+            );
+            painter.text(
+                logo_rect.center(),
+                Align2::CENTER_CENTER,
+                "H",
+                FontId::proportional(17.0),
+                if dark { INK } else { Color32::WHITE },
+            );
+        }
+
+        let brand_pos = pos2(r.left() + 122.0, control_y);
+        painter.text(
+            brand_pos,
+            Align2::LEFT_CENTER,
+            "Hanabi",
+            FontId::proportional(16.0),
+            primary,
+        );
+
+        let divider_x = r.left() + 184.0;
+        painter.line_segment(
+            [pos2(divider_x, r.center().y - 10.0), pos2(divider_x, r.center().y + 10.0)],
+            Stroke::new(1.0, if dark {
+                Color32::from_white_alpha(45)
+            } else {
+                Color32::from_black_alpha(22)
+            }),
+        );
+        painter.text(
+            pos2(divider_x + 14.0, control_y),
+            Align2::LEFT_CENTER,
+            &self.project_name,
+            FontId::proportional(14.0),
+            secondary,
+        );
+
+        // Export action.
+        let export_rect = Rect::from_center_size(
+            pos2(r.right() - 58.0, control_y),
+            vec2(86.0, 32.0),
+        );
+        let export_response = ui
+            .interact(export_rect, ui.id().with("titlebar-export"), Sense::click())
+            .on_hover_cursor(CursorIcon::PointingHand);
+        let export_fill = if dark {
+            Color32::from_rgb(224, 230, 244)
+        } else {
+            Color32::from_rgb(48, 57, 76)
+        };
+        let export_text = if dark { INK } else { Color32::WHITE };
+        shadow(&painter, export_rect, 11.0, 2.0, 6.0, 24);
+        painter.rect_filled(
+            export_rect,
+            11.0,
+            if export_response.hovered() {
+                export_fill.gamma_multiply(0.88)
+            } else {
+                export_fill
+            },
+        );
+        painter.text(
+            export_rect.center(),
+            Align2::CENTER_CENTER,
+            "↑  Export",
+            FontId::proportional(13.0),
+            export_text,
+        );
+
+        if export_response.clicked() {
+            // This UI-only editor has no render/export pipeline wired to this button yet.
+            // Keep the action useful by opening the destination picker for an MP4 export.
+            self.export_target = rfd::FileDialog::new()
+                .set_file_name("Hanabi-Export.mp4")
+                .add_filter("MP4 video", &["mp4"])
+                .save_file()
+                .map(|path| path.display().to_string());
+        }
+
+        // Drag the frameless window from the unused title-bar area.
+        let drag_rect = Rect::from_min_max(
+            pos2(r.left() + 205.0, r.top()),
+            pos2(export_rect.left() - 12.0, r.bottom()),
+        );
+        let drag = ui.interact(drag_rect, ui.id().with("titlebar-drag"), Sense::click_and_drag());
+        if drag.drag_started() {
+            ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
+        }
+    }
+
+    fn toolbar_ui(&mut self, ui: &mut Ui, r: Rect) {
+        let pt = ui.painter().clone();
+        glass(&pt, r, 24.0, Color32::from_white_alpha(46));
+        for i in 0..3 {
+            let c = pos2(r.center().x, r.top() + 28.0 + i as f32 * 46.0);
+            let br = Rect::from_center_size(c, vec2(38.0, 38.0));
+            let resp = ui
+                .interact(br, ui.id().with(("tool", i)), Sense::click())
+                .on_hover_cursor(CursorIcon::PointingHand);
+            if resp.clicked() {
+                self.tool = i;
+            }
+            let hot = ui.ctx().animate_bool_with_time(
+                ui.id().with(("toolhot", i)),
+                self.tool == i || resp.hovered(),
+                0.12,
+            );
+            if hot > 0.0 {
+                let a = if self.tool == i { 200.0 } else { 120.0 } * hot;
+                shadow(&pt, br, 19.0, 3.0, 8.0, (22.0 * hot) as u8);
+                pt.rect_filled(br, 19.0, Color32::from_white_alpha(a as u8));
+            }
+            match i {
+                0 => {
+                    pt.text(c, Align2::CENTER_CENTER, "✂", FontId::proportional(22.0), INK);
+                }
+                1 => {
+                    pt.text(c, Align2::CENTER_CENTER, "Aa", FontId::proportional(18.0), INK);
+                }
+                _ => {
+                    let pts = vec![
+                        c + vec2(-6.0, -9.0),
+                        c + vec2(-6.0, 9.0),
+                        c + vec2(9.0, 0.0),
+                    ];
+                    pt.add(Shape::convex_polygon(pts, INK, Stroke::new(2.0_f32, INK)));
+                }
+            }
+        }
+    }
+
+    fn preview_ui(&mut self, ui: &mut Ui, r: Rect) {
+        let pt = ui.painter().clone();
+        glass(&pt, r, 22.0, Color32::from_white_alpha(40));
+        pt.text(
+            r.left_top() + vec2(18.0, 16.0),
+            Align2::LEFT_TOP,
+            format!("{} / {}", fmt_time(self.pos * DURATION), fmt_time(DURATION)),
+            FontId::monospace(13.0),
+            INK_SOFT,
+        );
+        pt.text(r.center(), Align2::CENTER_CENTER, "Preview", FontId::proportional(20.0), Color32::from_black_alpha(40));
+
+        // seek bar
+        let seek = Rect::from_min_max(
+            pos2(r.left() + 24.0, r.bottom() - 82.0),
+            pos2(r.right() - 24.0, r.bottom() - 58.0),
+        );
+        let seek_p = p("seek", 0.0, 1.0, 0.0, "");
+        slider(ui, seek, "seek", &mut self.pos, &seek_p, false, false);
+
+        // play button
+        let c = pos2(r.center().x, r.bottom() - 30.0);
+        let br = Rect::from_center_size(c, vec2(44.0, 44.0));
+        let resp = ui
+            .interact(br, ui.id().with("play"), Sense::click())
+            .on_hover_cursor(CursorIcon::PointingHand);
+        if resp.clicked() {
+            if self.pos >= 1.0 {
+                self.pos = 0.0;
+            }
+            self.playing = !self.playing;
+        }
+        let hot = ui.ctx().animate_bool_with_time(ui.id().with("playhot"), resp.hovered(), 0.12);
+        shadow(&pt, br, 22.0, 3.0, 10.0, 30);
+        pt.circle_filled(c, 21.0 + hot * 1.5, Color32::WHITE);
+        if self.playing {
+            for dx in [-4.5, 4.5] {
+                pt.rect_filled(Rect::from_center_size(c + vec2(dx, 0.0), vec2(4.0, 14.0)), 1.5, INK);
+            }
+        } else {
+            pt.add(Shape::convex_polygon(
+                vec![c + vec2(-5.0, -8.0), c + vec2(-5.0, 8.0), c + vec2(8.0, 0.0)],
+                INK,
+                Stroke::NONE,
+            ));
+        }
+    }
+
+    fn right_ui(&mut self, ui: &mut Ui, r: Rect) {
+        let pt = ui.painter().clone();
+        glass(&pt, r, 22.0, Color32::from_white_alpha(40));
+
+        // ── tab bar (neumorphic pill, acrylic tabs) ──
+        let bar = Rect::from_min_size(r.min + vec2(10.0, 10.0), vec2(r.width() - 20.0, 46.0));
+        pt.rect_filled(bar, 23.0, Color32::from_black_alpha(16));
+        pt.rect_stroke(bar, 23.0, Stroke::new(1.5_f32, Color32::from_black_alpha(14)));
+        pt.rect_stroke(bar.translate(vec2(0.0, 1.0)), 23.0, Stroke::new(1.0_f32, Color32::from_white_alpha(120)));
+
+        let tw = bar.width() / 3.0;
+        let target = bar.left() + self.tab as f32 * tw;
+        let x = ui.ctx().animate_value_with_time(ui.id().with("tabx"), target, 0.18);
+        let act = Rect::from_min_size(pos2(x, bar.top()), vec2(tw, bar.height())).shrink(4.0);
+        shadow(&pt, act, 19.0, 3.0, 10.0, 34);
+        pt.rect_filled(act, 19.0, Color32::from_white_alpha(215)); // acrylic white tint
+        pt.rect_stroke(act, 19.0, Stroke::new(1.0_f32, Color32::WHITE));
+
+        for (i, name) in ["Transform", "Colors", "Media"].iter().enumerate() {
+            let tr = Rect::from_min_size(pos2(bar.left() + i as f32 * tw, bar.top()), vec2(tw, bar.height()));
+            let resp = ui
+                .interact(tr, ui.id().with(("tab", i)), Sense::click())
+                .on_hover_cursor(CursorIcon::PointingHand);
+            if resp.clicked() {
+                self.tab = i;
+            }
+            let col = if self.tab == i { INK } else { INK_SOFT };
+            pt.text(tr.center(), Align2::CENTER_CENTER, *name, FontId::proportional(15.0), col);
+        }
+
+        // ── content ──
+        let foot = if self.tab == 0 { 56.0 } else { 0.0 };
+        let content = Rect::from_min_max(
+            pos2(r.left() + 12.0, bar.bottom() + 12.0),
+            pos2(r.right() - 12.0, r.bottom() - 12.0 - foot),
+        );
+        let mut cui = ui.new_child(
+            UiBuilder::new()
+                .max_rect(content)
+                .layout(Layout::top_down(Align::Min)),
+        );
+        cui.set_clip_rect(content);
+        let tab = self.tab;
+        ScrollArea::vertical()
+            .id_salt(("scroll", tab))
+            .auto_shrink([false, false])
+            .show(&mut cui, |ui| match tab {
+                0 => self.transform_tab(ui),
+                1 => self.colors_tab(ui),
+                _ => self.media_tab(ui),
+            });
+
+        // keyframes button pinned to the bottom of the Transform tab
+        if self.tab == 0 {
+            let kb = Rect::from_center_size(pos2(r.center().x, r.bottom() - 34.0), vec2(160.0, 38.0));
+            let resp = ui
+                .interact(kb, ui.id().with("kf"), Sense::click())
+                .on_hover_cursor(CursorIcon::PointingHand);
+            if resp.clicked() {
+                self.keyframes = !self.keyframes;
+            }
+            let on = ui.ctx().animate_bool_with_time(ui.id().with("kfon"), self.keyframes, 0.15);
+            shadow(&pt, kb, 19.0, 3.0, 10.0, 26);
+            pt.rect_filled(kb, 19.0, Color32::from_white_alpha(170));
+            if on > 0.0 {
+                pt.rect_filled(kb, 19.0, BLUE.gamma_multiply(0.35 * on));
+            }
+            pt.rect_stroke(kb, 19.0, Stroke::new(1.0_f32, Color32::WHITE));
+            let col = if self.keyframes { Color32::from_rgb(30, 90, 190) } else { INK };
+            pt.text(kb.center(), Align2::CENTER_CENTER, "◆  Keyframes", FontId::proportional(15.0), col);
+        }
+    }
+
+    fn transform_tab(&mut self, ui: &mut Ui) {
+        ui.add_space(6.0);
+        for (i, prm) in T_PARAMS.iter().enumerate() {
+            param_row(ui, &mut self.transform[i], prm, false, false);
+            ui.add_space(4.0);
+        }
+    }
+
+    fn colors_tab(&mut self, ui: &mut Ui) {
+        ui.add_space(4.0);
+        for (si, &(title, icon, params)) in SECTIONS.iter().enumerate() {
+            let open = self.open[si];
+            let w = ui.available_width();
+            let (hr, resp) = ui.allocate_exact_size(vec2(w, 42.0), Sense::click());
+            let resp = resp.on_hover_cursor(CursorIcon::PointingHand);
+            if resp.clicked() {
+                self.open[si] = !open;
+            }
+            let pt = ui.painter();
+            let a = if open { 170 } else if resp.hovered() { 130 } else { 95 };
+            pt.rect_filled(hr, 15.0, Color32::from_white_alpha(a));
+            pt.rect_stroke(hr, 15.0, Stroke::new(1.0_f32, Color32::from_white_alpha(190)));
+            pt.text(hr.left_center() + vec2(18.0, 0.0), Align2::CENTER_CENTER, icon, FontId::proportional(17.0), INK);
+            pt.text(hr.left_center() + vec2(40.0, 0.0), Align2::LEFT_CENTER, title, FontId::proportional(15.0), INK);
+            let cc = hr.right_center() - vec2(20.0, 0.0);
+            pt.circle_stroke(cc, 9.0, Stroke::new(1.0_f32, INK_SOFT));
+            pt.line_segment([cc - vec2(4.0, 0.0), cc + vec2(4.0, 0.0)], Stroke::new(1.3_f32, INK_SOFT));
+            if !open {
+                pt.line_segment([cc - vec2(0.0, 4.0), cc + vec2(0.0, 4.0)], Stroke::new(1.3_f32, INK_SOFT));
+            }
+            ui.add_space(4.0);
+
+            if open {
+                Frame::none()
+                    .fill(Color32::from_white_alpha(70))
+                    .rounding(15.0)
+                    .stroke(Stroke::new(1.0_f32, Color32::from_white_alpha(150)))
+                    .inner_margin(Margin::symmetric(10.0, 6.0))
+                    .show(ui, |ui| {
+                        let w = ui.available_width();
+                        let (rr, rresp) = ui.allocate_exact_size(vec2(w, 22.0), Sense::click());
+                        let rresp = rresp.on_hover_cursor(CursorIcon::PointingHand);
+                        let col = if rresp.hovered() { INK } else { INK_SOFT };
+                        ui.painter().text(rr.right_center(), Align2::RIGHT_CENTER, "↺ Reset", FontId::proportional(13.0), col);
+                        if rresp.clicked() {
+                            for (j, prm) in params.iter().enumerate() {
+                                self.colors[si][j] = prm.def;
+                            }
+                        }
+                        for (j, prm) in params.iter().enumerate() {
+                            let grad = prm.name == "Temperature";
+                            param_row(ui, &mut self.colors[si][j], prm, prm.min < 0.0, grad);
+                        }
+                    });
+                ui.add_space(8.0);
+            }
+        }
+    }
+
+    fn media_tab(&mut self, ui: &mut Ui) {
+        let w = ui.available_width();
+        let (hr, _) = ui.allocate_exact_size(vec2(w, 44.0), Sense::hover());
+        ui.painter().text(hr.left_center() + vec2(6.0, 0.0), Align2::LEFT_CENTER, "Media", FontId::proportional(17.0), INK);
+
+        // "+" import button (top right)
+        let c = hr.right_center() - vec2(20.0, 0.0);
+        let br = Rect::from_center_size(c, vec2(36.0, 36.0));
+        let resp = ui
+            .interact(br, ui.id().with("import"), Sense::click())
+            .on_hover_cursor(CursorIcon::PointingHand);
+        let hot = ui.ctx().animate_bool_with_time(ui.id().with("importhot"), resp.hovered(), 0.12);
+        {
+            let pt = ui.painter();
+            shadow(pt, br, 18.0, 3.0, 9.0, 30);
+            pt.circle_filled(c, 17.0 + hot, Color32::from_white_alpha(215));
+            pt.circle_stroke(c, 17.0 + hot, Stroke::new(1.0_f32, Color32::WHITE));
+            pt.line_segment([c - vec2(6.0, 0.0), c + vec2(6.0, 0.0)], Stroke::new(2.0_f32, INK));
+            pt.line_segment([c - vec2(0.0, 6.0), c + vec2(0.0, 6.0)], Stroke::new(2.0_f32, INK));
+        }
+        if resp.clicked() {
+            if let Some(files) = rfd::FileDialog::new()
+                .add_filter("media", &["mp4", "mov", "mkv", "avi", "webm", "mp3", "wav", "png", "jpg", "jpeg"])
+                .pick_files()
+            {
+                for f in files {
+                    if let Some(n) = f.file_name() {
+                        self.media.push(n.to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+
+        if self.media.is_empty() {
+            ui.add_space(30.0);
+            ui.vertical_centered(|ui| {
+                ui.label(RichText::new("Nothing here yet — hit + to import").color(INK_SOFT));
             });
         }
-        ctx.request_repaint_after(Duration::from_millis(if self.playing { 12 } else { 40 }));
-    }
-}
-
-fn surface(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
-    let rect = ui.available_rect_before_wrap().shrink(1.0);
-    ui.painter().add(epaint::Shadow {
-        offset: vec2(0.0, 5.0), blur: 18.0, spread: 0.0,
-        color: Color32::from_black_alpha(18),
-    }.as_shape(rect, 20.0));
-    Frame::none().fill(panel()).stroke(Stroke::new(1.0_f32, panel_edge())).rounding(20.0)
-        .inner_margin(Margin::same(12.0)).show(ui, add_contents);
-}
-
-fn section_surface(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
-    Frame::none().fill(Color32::from_rgba_unmultiplied(255, 255, 255, 104))
-        .stroke(Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(166, 176, 190, 78)))
-        .rounding(15.0).inner_margin(Margin::same(8.0)).show(ui, add_contents);
-}
-
-fn glass_button(ui: &mut Ui, label: &str) -> Response {
-    let font_id = TextStyle::Button.resolve(ui.style());
-    let galley = ui.painter().layout_no_wrap(label.to_owned(), font_id.clone(), INK);
-    let padding = ui.spacing().button_padding;
-    let mut desired_size = galley.size() + padding * 2.0 + vec2(4.0, 3.0);
-    desired_size.x = desired_size.x.max(42.0);
-    desired_size.y = desired_size.y.max(29.0);
-    let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
-    let fill = if response.is_pointer_button_down_on() {
-        Color32::from_rgba_unmultiplied(226, 236, 250, 238)
-    } else if response.hovered() {
-        Color32::from_rgba_unmultiplied(255, 255, 255, 248)
-    } else {
-        Color32::from_rgba_unmultiplied(250, 252, 255, 218)
-    };
-    ui.painter().add(epaint::Shadow {
-        offset: vec2(0.0, 2.0), blur: 7.0, spread: 0.0,
-        color: Color32::from_black_alpha(if response.hovered() { 30 } else { 20 }),
-    }.as_shape(rect, 11.0));
-    ui.painter().rect_filled(rect, 11.0, fill);
-    ui.painter().rect_stroke(rect, 11.0, Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 225)));
-    ui.painter().text(rect.center(), Align2::CENTER_CENTER, label, font_id, INK);
-    response
-}
-
-fn empty_state(ui: &mut Ui, title: &str, detail: &str) {
-    ui.add_space(24.0);
-    ui.vertical_centered(|ui| {
-        ui.label(RichText::new("◌").size(25.0).color(Color32::from_rgb(171, 181, 196)));
-        ui.add_space(6.0);
-        ui.label(RichText::new(title).strong().color(INK));
-        ui.add_space(3.0);
-        ui.label(RichText::new(detail).size(11.0).color(INK_SOFT));
-    });
-    ui.add_space(20.0);
-}
-
-fn empty_timeline() -> Value {
-    json!({"clips":[],"durationSeconds":MIN_PROJECT_SECONDS,"snapping":true,"magnetic":true})
-}
-
-fn default_props() -> Value {
-    json!({
-        "transform": {
-            "position":{"x":0.0,"y":0.0},
-            "scale":{"w":100.0,"h":100.0},
-            "rotation":0.0,
-            "opacity":100.0,
-            "crop":{"left":0.0,"right":0.0,"top":0.0,"bottom":0.0},
-            "distort":{"tl":0.0,"tr":0.0,"br":0.0,"bl":0.0}
-        },
-        "colors": {
-            "light":{"exposure":0.0,"brightness":0.0,"contrast":0.0,"highlights":0.0,"shadows":0.0,"whites":0.0,"blacks":0.0},
-            "color":{"temperature":0.0,"vibrance":0.0,"saturation":0.0},
-            "detail":{"sharpness":0.0,"clarity":0.0,"vignette":0.0}
-        },
-        "effects": {
-            "chromatic":{"enabled":false,"amount":28.0,"angle":0.0},
-            "wave":{"enabled":false,"amount":0.0,"frequency":4.0},
-            "swirl":{"enabled":false,"amount":0.0,"radius":70.0},
-            "blur":{"enabled":false,"amount":0.0},
-            "pixelate":{"enabled":false,"size":12.0,"blend":100.0}
+        for i in 0..self.media.len() {
+            let (rr, rs) = ui.allocate_exact_size(vec2(ui.available_width(), 42.0), Sense::click());
+            let rs = rs.on_hover_cursor(CursorIcon::PointingHand);
+            if rs.clicked() {
+                self.selected_media = Some(i);
+            }
+            let sel = self.selected_media == Some(i);
+            let a = if sel { 190 } else if rs.hovered() { 130 } else { 90 };
+            let pt = ui.painter();
+            pt.rect_filled(rr, 13.0, Color32::from_white_alpha(a));
+            pt.rect_stroke(rr, 13.0, Stroke::new(1.0_f32, Color32::from_white_alpha(180)));
+            let mut name = self.media[i].clone();
+            if name.chars().count() > 30 {
+                name = name.chars().take(28).collect::<String>() + "…";
+            }
+            pt.text(rr.left_center() + vec2(14.0, 0.0), Align2::LEFT_CENTER, format!("🎞  {name}"), FontId::proportional(14.0), INK);
+            ui.add_space(5.0);
         }
-    })
-}
-
-fn json_number(root: &Value, path: &str, fallback: f64) -> f64 {
-    let mut current = root;
-    for key in path.split('.') {
-        let Some(next) = current.get(key) else { return fallback; };
-        current = next;
     }
-    current.as_f64().filter(|value| value.is_finite()).unwrap_or(fallback)
-}
 
-fn json_bool(root: &Value, path: &str, fallback: bool) -> bool {
-    let mut current = root;
-    for key in path.split('.') {
-        let Some(next) = current.get(key) else { return fallback; };
-        current = next;
+    fn timeline_ui(&mut self, ui: &mut Ui, r: Rect) {
+        let pt = ui.painter().clone();
+        glass(&pt, r, 20.0, Color32::from_white_alpha(40));
+
+        let head_w = 58.0;
+        let head = Rect::from_min_max(r.min, pos2(r.left() + head_w, r.bottom())).shrink2(vec2(6.0, 6.0));
+        pt.rect_filled(head, 14.0, Color32::from_white_alpha(120));
+        pt.rect_stroke(head, 14.0, Stroke::new(1.0_f32, Color32::from_white_alpha(180)));
+
+        let tracks = Rect::from_min_max(pos2(r.left() + head_w + 6.0, r.top() + 6.0), r.max - vec2(6.0, 6.0));
+        let mid = tracks.center().y;
+        pt.text(pos2(head.center().x, (head.top() + mid) / 2.0), Align2::CENTER_CENTER, "V1", FontId::proportional(13.0), INK_SOFT);
+        pt.text(pos2(head.center().x, (mid + head.bottom()) / 2.0), Align2::CENTER_CENTER, "A1", FontId::proportional(13.0), INK_SOFT);
+
+        // the divider line between the two tracks
+        pt.line_segment(
+            [pos2(r.left() + 10.0, mid), pos2(r.right() - 10.0, mid)],
+            Stroke::new(1.5_f32, Color32::from_rgb(170, 205, 235)),
+        );
+
+        // scrub by clicking / dragging in the track area
+        let resp = ui.interact(tracks, ui.id().with("scrub"), Sense::click_and_drag());
+        if resp.is_pointer_button_down_on() {
+            if let Some(pp) = resp.interact_pointer_pos() {
+                self.pos = ((pp.x - tracks.left()) / tracks.width()).clamp(0.0, 1.0);
+            }
+        }
+        let x = tracks.left() + self.pos * tracks.width();
+        pt.line_segment([pos2(x, tracks.top()), pos2(x, tracks.bottom())], Stroke::new(2.0_f32, BLUE));
+        pt.circle_filled(pos2(x, tracks.top() + 4.0), 5.0, BLUE);
     }
-    current.as_bool().unwrap_or(fallback)
 }
 
-fn set_json_path(root: &mut Value, path: &str, value: Value) {
-    let parts: Vec<_> = path.split('.').filter(|part| !part.is_empty()).collect();
-    let mut current = root;
-    for part in &parts[..parts.len().saturating_sub(1)] {
-        if !current[*part].is_object() { current[*part] = json!({}); }
-        current = &mut current[*part];
+// ───────────────────────── widgets ─────────────────────────
+
+/// label | slider | value pill
+fn param_row(ui: &mut Ui, v: &mut f32, prm: &Param, bipolar: bool, grad: bool) {
+    let w = ui.available_width();
+    let (row, _) = ui.allocate_exact_size(vec2(w, 34.0), Sense::hover());
+    let cy = row.center().y;
+    let label_w = 86.0;
+    let pill = Rect::from_center_size(pos2(row.right() - 32.0, cy), vec2(60.0, 24.0));
+    {
+        let pt = ui.painter();
+        pt.text(pos2(row.left() + 6.0, cy), Align2::LEFT_CENTER, prm.name, FontId::proportional(14.0), INK);
+        pt.rect_filled(pill, 12.0, Color32::from_black_alpha(14));
+        let s = if prm.max - prm.min < 20.0 {
+            format!("{:.2}{}", v, prm.unit)
+        } else {
+            format!("{:.0}{}", v, prm.unit)
+        };
+        pt.text(pill.center(), Align2::CENTER_CENTER, s, FontId::proportional(13.0), INK);
     }
-    if let Some(last) = parts.last() { current[*last] = value; }
+    let srect = Rect::from_min_max(pos2(row.left() + label_w, cy - 12.0), pos2(pill.left() - 8.0, cy + 12.0));
+    slider(ui, srect, prm.name, v, prm, bipolar, grad);
 }
 
-fn fmt_time(seconds: f64) -> String {
-    let total = seconds.max(0.0) as u64;
-    format!("{:02}:{:02}.{:02}", total / 60, total % 60, ((seconds.fract().abs() * 100.0).round() as u64).min(99))
+/// neumorphic slider: recessed groove, blue fill, soft white knob.
+/// double-click resets to default.
+fn slider(ui: &mut Ui, rect: Rect, salt: impl Hash, v: &mut f32, prm: &Param, bipolar: bool, grad: bool) -> bool {
+    let id = ui.id().with(salt);
+    let resp = ui.interact(rect, id, Sense::click_and_drag());
+    let kr = 10.0;
+    let (x0, x1) = (rect.left() + kr, rect.right() - kr);
+    let mut changed = false;
+
+    if resp.is_pointer_button_down_on() {
+        if let Some(pp) = resp.interact_pointer_pos() {
+            let t = ((pp.x - x0) / (x1 - x0)).clamp(0.0, 1.0);
+            *v = prm.min + t * (prm.max - prm.min);
+            changed = true;
+        }
+    }
+    if resp.double_clicked() {
+        *v = prm.def;
+        changed = true;
+    }
+
+    let t = ((*v - prm.min) / (prm.max - prm.min)).clamp(0.0, 1.0);
+    let kx = x0 + t * (x1 - x0);
+    let cy = rect.center().y;
+    let track = Rect::from_min_max(pos2(rect.left() + 3.0, cy - 4.0), pos2(rect.right() - 3.0, cy + 4.0));
+    let hot = ui
+        .ctx()
+        .animate_bool_with_time(id.with("hot"), resp.hovered() || resp.dragged(), 0.12);
+
+    let pt = ui.painter();
+    pt.rect_filled(track, 4.0, Color32::from_black_alpha(22));
+    pt.line_segment(
+        [track.left_top() + vec2(4.0, 0.5), track.right_top() + vec2(-4.0, 0.5)],
+        Stroke::new(1.0_f32, Color32::from_black_alpha(26)),
+    );
+    pt.line_segment(
+        [track.left_bottom() + vec2(4.0, 1.0), track.right_bottom() + vec2(-4.0, 1.0)],
+        Stroke::new(1.0_f32, Color32::from_white_alpha(150)),
+    );
+
+    if grad {
+        let a = Color32::from_rgb(70, 130, 255);
+        let b = Color32::from_rgb(255, 175, 60);
+        let mut m = Mesh::default();
+        m.colored_vertex(track.left_top(), a);
+        m.colored_vertex(track.right_top(), b);
+        m.colored_vertex(track.right_bottom(), b);
+        m.colored_vertex(track.left_bottom(), a);
+        m.add_triangle(0, 1, 2);
+        m.add_triangle(0, 2, 3);
+        pt.add(Shape::mesh(m));
+    } else {
+        let sx = if bipolar {
+            x0 + ((prm.def - prm.min) / (prm.max - prm.min)) * (x1 - x0)
+        } else {
+            track.left()
+        };
+        let fill = Rect::from_min_max(pos2(sx.min(kx), track.top()), pos2(sx.max(kx), track.bottom()));
+        if fill.width() > 0.5 {
+            pt.rect_filled(fill, 4.0, BLUE);
+        }
+    }
+
+    let c = pos2(kx, cy);
+    let rad = kr + hot * 1.5;
+    pt.circle_filled(c + vec2(0.0, 3.0), rad + 3.0, Color32::from_black_alpha(10));
+    pt.circle_filled(c + vec2(0.0, 2.0), rad + 1.0, Color32::from_black_alpha(26));
+    pt.circle_filled(c, rad, Color32::WHITE);
+    pt.circle_stroke(c, rad, Stroke::new(1.0_f32, Color32::from_black_alpha(18)));
+    changed
 }
+
+// ───────────────────────── paint helpers ─────────────────────────
+
+fn shadow(p: &Painter, r: Rect, rad: f32, off: f32, blur: f32, alpha: u8) {
+    p.add(
+        epaint::Shadow {
+            offset: vec2(0.0, off),
+            blur,
+            spread: 0.0,
+            color: Color32::from_black_alpha(alpha),
+        }
+        .as_shape(r, rad),
+    );
+}
+
+/// frosted glass panel: soft shadow + translucent fill + bright edge
+fn glass(p: &Painter, r: Rect, rad: f32, fill: Color32) {
+    shadow(p, r, rad, 8.0, 26.0, 30);
+    p.rect_filled(r, rad, fill);
+    p.rect_stroke(r, rad, Stroke::new(1.0_f32, Color32::from_white_alpha(170)));
+    p.rect_stroke(r.shrink(1.0), rad - 1.0, Stroke::new(1.0_f32, Color32::from_black_alpha(8)));
+}
+
+fn draw_backdrop(p: &Painter, r: Rect) {
+    let mut m = Mesh::default();
+    m.colored_vertex(r.left_top(), Color32::from_rgb(186, 208, 255));
+    m.colored_vertex(r.right_top(), Color32::from_rgb(255, 205, 226));
+    m.colored_vertex(r.right_bottom(), Color32::from_rgb(255, 232, 192));
+    m.colored_vertex(r.left_bottom(), Color32::from_rgb(196, 240, 226));
+    m.add_triangle(0, 1, 2);
+    m.add_triangle(0, 2, 3);
+    p.add(Shape::mesh(m));
+    // soft blobs so the glass has something to sit over
+    for (c, base, col) in [
+        (r.lerp_inside(vec2(0.25, 0.3)), 260.0, (120, 160, 255)),
+        (r.lerp_inside(vec2(0.78, 0.65)), 300.0, (255, 150, 190)),
+    ] {
+        for k in 0..16 {
+            let rad = base * (1.0 - k as f32 / 16.0);
+            p.circle_filled(c, rad, Color32::from_rgba_unmultiplied(col.0, col.1, col.2, 7));
+        }
+    }
+}
+
+fn fmt_time(s: f32) -> String {
+    let s = s.max(0.0) as u32;
+    format!("{:02}:{:02}", s / 60, s % 60)
+}
+
+
+fn load_hanabi_logo(ctx: &Context) -> Option<TextureHandle> {
+    use std::path::Path;
+
+    let mut candidates = vec![
+        Path::new("logo/hanabi.png").to_path_buf(),
+        Path::new("logo/logo.png").to_path_buf(),
+        Path::new("logo/icon.png").to_path_buf(),
+        Path::new("assets/logo.png").to_path_buf(),
+        Path::new("logo/hanabi.jpg").to_path_buf(),
+        Path::new("logo/logo.jpg").to_path_buf(),
+    ];
+
+    // Also accept any PNG/JPEG placed directly inside the logo folder.
+    if let Ok(entries) = std::fs::read_dir("logo") {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let ext = path.extension().and_then(|value| value.to_str()).unwrap_or("");
+            if matches!(ext.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg") {
+                candidates.push(path);
+            }
+        }
+    }
+
+    for path in candidates {
+        let Ok(bytes) = std::fs::read(&path) else { continue };
+        let Ok(decoded) = image::load_from_memory(&bytes) else { continue };
+        let rgba = decoded.to_rgba8();
+        let size = [rgba.width() as usize, rgba.height() as usize];
+        let pixels = rgba.into_raw();
+        let image = ColorImage::from_rgba_unmultiplied(size, &pixels);
+        return Some(ctx.load_texture("hanabi-logo", image, TextureOptions::LINEAR));
+    }
+    None
+}
+
+// ───────────────────────── main ─────────────────────────
 
 fn main() -> eframe::Result<()> {
-    let options = eframe::NativeOptions {
+    let opts = eframe::NativeOptions {
         viewport: ViewportBuilder::default()
-            .with_title("Hanabi")
-            .with_inner_size([1500.0, 900.0])
-            .with_min_inner_size([1100.0, 690.0])
-            .with_transparent(true)
+            .with_inner_size([1280.0, 720.0])
+            .with_min_inner_size([900.0, 560.0])
             .with_decorations(false)
-            .with_resizable(true),
+            .with_transparent(true),
         ..Default::default()
     };
-    eframe::run_native("Hanabi", options, Box::new(|cc| Ok(Box::new(HanabiApp::new(cc)))))
+    eframe::run_native("Hanabi", opts, Box::new(|cc| Ok(Box::new(App::new(cc)))))
 }

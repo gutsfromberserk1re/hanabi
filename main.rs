@@ -65,10 +65,20 @@ const DETAIL: [Param; 3] = [
     p("Clarity", -100.0, 100.0, 0.0, ""),
     p("Vignette", -100.0, 100.0, 0.0, ""),
 ];
-const SECTIONS: [(&str, &str, &[Param]); 3] = [
-    ("Light", "☀", &LIGHT),
-    ("Color", "💧", &COLOR),
-    ("Detail", "▲", &DETAIL),
+const FX: [Param; 6] = [
+    p("Blur", 0.0, 100.0, 0.0, "%"),
+    p("Soft glow", 0.0, 100.0, 0.0, "%"),
+    p("Grain", 0.0, 100.0, 0.0, "%"),
+    p("VHS", 0.0, 100.0, 0.0, "%"),
+    p("Chromatic", 0.0, 100.0, 0.0, "%"),
+    p("Sine wave", 0.0, 100.0, 0.0, "%"),
+];
+/// (title, icon id for `section_icon`, params)
+const SECTIONS: [(&str, &str, &[Param]); 4] = [
+    ("Light", "light", &LIGHT),
+    ("Color", "color", &COLOR),
+    ("Detail", "detail", &DETAIL),
+    ("Video effects", "fx", &FX),
 ];
 
 /// height of one framed param row (see `param_row`)
@@ -87,7 +97,7 @@ struct App {
     keys: Vec<f32>, // keyframe positions, 0..1
     transform: Vec<f32>,
     colors: Vec<Vec<f32>>,
-    open: [bool; 3],
+    open: [bool; 4],
     media: Vec<String>,
     selected_media: Option<usize>,
 }
@@ -109,7 +119,7 @@ impl App {
                 .iter()
                 .map(|s| s.2.iter().map(|p| p.def).collect())
                 .collect(),
-            open: [true, false, false],
+            open: [true, false, false, false],
             media: vec![],
             selected_media: None,
         }
@@ -142,7 +152,11 @@ impl eframe::App for App {
         CentralPanel::default().frame(Frame::none()).show(ctx, |ui| {
             let full = ui.max_rect();
             if FAKE_BACKDROP {
-                ui.painter().rect_filled(full, 0.0, BG);
+                // rounded window (square when maximized)
+                let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+                let win_rad = if maximized { 0.0 } else { 24.0 };
+                ui.painter().rect_filled(full, win_rad, BG);
+                ui.painter().rect_stroke(full.shrink(0.5), win_rad, Stroke::new(1.0_f32, Color32::from_black_alpha(36)));
             }
 
             let gap = 16.0;
@@ -422,7 +436,7 @@ impl App {
         let act = Rect::from_min_size(pos2(x, bar.top()), vec2(tw, bar.height())).shrink(5.0);
         raised(&pt, act, 19.0, 5.0);
 
-        for (i, name) in ["Transform", "Colors", "Media"].iter().enumerate() {
+        for (i, name) in ["Transform", "Effects", "Media"].iter().enumerate() {
             let tr = Rect::from_min_size(pos2(bar.left() + i as f32 * tw, bar.top()), vec2(tw, bar.height()));
             let resp = ui
                 .interact(tr, ui.id().with(("tab", i)), Sense::click())
@@ -480,7 +494,7 @@ impl App {
             let hot = ui.ctx().animate_bool_with_time(resp.id.with("hot"), resp.hovered(), 0.12);
             let pt = ui.painter();
             raised(pt, hr, 16.0, 3.5 + hot);
-            pt.text(hr.left_center() + vec2(22.0, 0.0), Align2::CENTER_CENTER, icon, FontId::proportional(17.0), INK);
+            section_icon(pt, hr.left_center() + vec2(22.0, 0.0), icon);
             pt.text(hr.left_center() + vec2(44.0, 0.0), Align2::LEFT_CENTER, title, FontId::proportional(15.0), INK);
             // +/- knob: raised when closed, pressed when open
             let cc = hr.right_center() - vec2(24.0, 0.0);
@@ -738,27 +752,42 @@ fn raised(p: &Painter, r: Rect, rad: f32, d: f32) {
     raised_fill(p, r, rad, d, SURFACE);
 }
 
-/// recessed surface: slightly darker fill + soft inner shade, all drawn INSIDE the
-/// rounded outline (no clip box, so nothing bleeds into the square corners)
+/// points of a rounded-rect outline, clockwise from the top-left arc
+fn rrect_points(r: Rect, rad: f32) -> Vec<Pos2> {
+    use std::f32::consts::{FRAC_PI_2, PI};
+    let rad = rad.min(r.width() / 2.0).min(r.height() / 2.0).max(0.0);
+    let steps = 5;
+    let corners = [
+        (pos2(r.left() + rad, r.top() + rad), PI),
+        (pos2(r.right() - rad, r.top() + rad), PI + FRAC_PI_2),
+        (pos2(r.right() - rad, r.bottom() - rad), 0.0),
+        (pos2(r.left() + rad, r.bottom() - rad), FRAC_PI_2),
+    ];
+    let mut pts = Vec::with_capacity(4 * (steps + 1));
+    for (c, a0) in corners {
+        for i in 0..=steps {
+            let a = a0 + FRAC_PI_2 * i as f32 / steps as f32;
+            pts.push(c + vec2(a.cos(), a.sin()) * rad);
+        }
+    }
+    pts
+}
+
+/// recessed surface: slightly darker fill + a soft inner shade that follows the
+/// rounded outline all the way round, strongest at the top and fading to nothing
+/// at the bottom, so it blends into the shape with no hard ends or corner boxes
 fn pressed(p: &Painter, r: Rect, rad: f32, d: f32) {
     p.rect_filled(r, rad, Color32::from_black_alpha(16));
-    let n = (d * 1.6).ceil().max(2.0) as i32;
+    let n = (d * 1.2).ceil().clamp(2.0, 4.0) as i32;
     for k in 0..n {
-        let t = 1.0 - k as f32 / n as f32;
-        let kf = k as f32;
-        // faint ring all the way round
-        p.rect_stroke(
-            r.shrink(kf + 0.5),
-            (rad - kf - 0.5).max(0.0),
-            Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(40, 52, 80, (22.0 * t) as u8)),
-        );
-        // extra shade along the straight part of the top edge
-        let y = r.top() + kf + 0.5;
-        if r.width() > rad * 2.0 {
-            p.line_segment(
-                [pos2(r.left() + rad, y), pos2(r.right() - rad, y)],
-                Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(40, 52, 80, (34.0 * t) as u8)),
-            );
+        let inset = k as f32 + 1.0;
+        let pts = rrect_points(r.shrink(inset), (rad - inset).max(0.0));
+        let fade = 1.0 - k as f32 / n as f32;
+        for i in 0..pts.len() {
+            let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
+            let ty = (((a.y + b.y) * 0.5 - r.top()) / r.height().max(1.0)).clamp(0.0, 1.0);
+            let alpha = 46.0 * fade * (1.0 - 0.8 * ty);
+            p.line_segment([a, b], Stroke::new(1.2_f32, Color32::from_rgba_unmultiplied(40, 52, 80, alpha as u8)));
         }
     }
 }
@@ -794,6 +823,38 @@ fn cursor_icon(p: &Painter, c: Pos2, col: Color32) {
     }
     p.add(Shape::mesh(m));
     p.add(Shape::closed_line(pts.to_vec(), Stroke::new(1.2_f32, col)));
+}
+
+fn section_icon(p: &Painter, c: Pos2, id: &str) {
+    match id {
+        "light" => {
+            p.circle_filled(c, 3.6, INK);
+            for k in 0..8 {
+                let a = k as f32 * std::f32::consts::FRAC_PI_4;
+                let d = vec2(a.cos(), a.sin());
+                p.line_segment([c + d * 6.2, c + d * 8.6], Stroke::new(1.5_f32, INK));
+            }
+        }
+        "color" => {
+            // water drop: round bottom + pointed top
+            p.circle_filled(c + vec2(0.0, 2.8), 5.2, INK);
+            p.add(Shape::convex_polygon(vec![c + vec2(0.0, -8.5), c + vec2(-4.6, 1.5), c + vec2(4.6, 1.5)], INK, Stroke::NONE));
+        }
+        "detail" => {
+            // sharpness: solid triangle
+            p.add(Shape::convex_polygon(vec![c + vec2(0.0, -8.0), c + vec2(8.0, 6.5), c + vec2(-8.0, 6.5)], INK, Stroke::new(1.2_f32, INK)));
+        }
+        _ => {
+            // sparkle for video effects: big 4-point star + small one
+            let star = |p: &Painter, c: Pos2, s: f32| {
+                let t = s * 0.28;
+                p.add(Shape::convex_polygon(vec![c + vec2(0.0, -s), c + vec2(t, 0.0), c + vec2(0.0, s), c + vec2(-t, 0.0)], INK, Stroke::NONE));
+                p.add(Shape::convex_polygon(vec![c + vec2(-s, 0.0), c + vec2(0.0, -t), c + vec2(s, 0.0), c + vec2(0.0, t)], INK, Stroke::NONE));
+            };
+            star(p, c + vec2(-1.5, 1.5), 8.0);
+            star(p, c + vec2(6.0, -6.0), 3.6);
+        }
+    }
 }
 
 fn crop_icon(p: &Painter, c: Pos2, col: Color32) {

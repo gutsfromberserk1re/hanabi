@@ -1,0 +1,12 @@
+[package]
+name = "glass_editor"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "glass_editor"
+path = "main.rs"
+
+[dependencies]
+eframe = "0.29"
+rfd = "0.15"

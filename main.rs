@@ -23,7 +23,6 @@ fn sh_dark() -> Color32 {
 fn in_dark() -> Color32 {
     Color32::from_rgba_unmultiplied(40, 52, 80, 55)
 }
-
 // ───────────────────────── params ─────────────────────────
 
 #[derive(Clone, Copy)]
@@ -89,7 +88,6 @@ struct App {
     transform: Vec<f32>,
     colors: Vec<Vec<f32>>,
     open: [bool; 3],
-    keyframes: bool,
     media: Vec<String>,
     selected_media: Option<usize>,
 }
@@ -112,7 +110,6 @@ impl App {
                 .map(|s| s.2.iter().map(|p| p.def).collect())
                 .collect(),
             open: [true, false, false],
-            keyframes: false,
             media: vec![],
             selected_media: None,
         }
@@ -149,7 +146,9 @@ impl eframe::App for App {
             }
 
             let gap = 16.0;
-            let area = full.shrink(gap);
+            let title_h = 44.0;
+            self.titlebar_ui(ui, Rect::from_min_max(full.min, pos2(full.right(), full.top() + title_h)));
+            let area = Rect::from_min_max(pos2(full.left() + gap, full.top() + title_h), full.max - vec2(gap, gap));
             let tl_h = (area.height() * 0.30).max(150.0);
             let top = Rect::from_min_max(area.min, pos2(area.right(), area.bottom() - tl_h - gap));
             let timeline = Rect::from_min_max(pos2(area.left(), top.bottom() + gap), area.max);
@@ -177,6 +176,53 @@ impl eframe::App for App {
 // ───────────────────────── panels ─────────────────────────
 
 impl App {
+    /// seamless titlebar: same backdrop colour, themed window buttons
+    fn titlebar_ui(&mut self, ui: &mut Ui, r: Rect) {
+        let ctx = ui.ctx().clone();
+        let pt = ui.painter().clone();
+
+        // drag region first, so the buttons registered after it win the hit-test
+        let drag = ui.interact(r, ui.id().with("titledrag"), Sense::click_and_drag());
+        if drag.drag_started_by(PointerButton::Primary) {
+            ctx.send_viewport_cmd(ViewportCommand::StartDrag);
+        }
+        if drag.double_clicked() {
+            let max = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+            ctx.send_viewport_cmd(ViewportCommand::Maximized(!max));
+        }
+
+        pt.text(pos2(r.left() + 24.0, r.center().y), Align2::LEFT_CENTER, "Hanabi", FontId::proportional(15.0), INK);
+
+        let ink = INK_SOFT;
+        let st = Stroke::new(1.7_f32, ink);
+        // close · maximize · minimize (right → left)
+        let cx = |i: f32| pos2(r.right() - 30.0 - i * 40.0, r.center().y);
+
+        let close = round_btn(ui, cx(0.0), 15.0, "wclose", false);
+        let c = cx(0.0);
+        let cc = if close.hovered() { Color32::from_rgb(226, 98, 98) } else { ink };
+        let cs = Stroke::new(1.7_f32, cc);
+        pt.line_segment([c + vec2(-4.5, -4.5), c + vec2(4.5, 4.5)], cs);
+        pt.line_segment([c + vec2(-4.5, 4.5), c + vec2(4.5, -4.5)], cs);
+        if close.clicked() {
+            ctx.send_viewport_cmd(ViewportCommand::Close);
+        }
+
+        let maxb = round_btn(ui, cx(1.0), 15.0, "wmax", false);
+        pt.rect_stroke(Rect::from_center_size(cx(1.0), vec2(10.0, 10.0)), 2.0, st);
+        if maxb.clicked() {
+            let max = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+            ctx.send_viewport_cmd(ViewportCommand::Maximized(!max));
+        }
+
+        let minb = round_btn(ui, cx(2.0), 15.0, "wmin", false);
+        let c = cx(2.0);
+        pt.line_segment([c + vec2(-5.0, 2.5), c + vec2(5.0, 2.5)], st);
+        if minb.clicked() {
+            ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
+        }
+    }
+
     fn toolbar_ui(&mut self, ui: &mut Ui, r: Rect) {
         let pt = ui.painter().clone();
         raised(&pt, r, 26.0, 7.0);
@@ -389,7 +435,7 @@ impl App {
         }
 
         // ── content ──
-        let foot = if self.tab == 0 { 58.0 } else { 0.0 };
+        let foot = 0.0;
         let content = Rect::from_min_max(
             pos2(r.left() + 14.0, bar.bottom() + 14.0),
             pos2(r.right() - 14.0, r.bottom() - 14.0 - foot),
@@ -409,24 +455,6 @@ impl App {
                 1 => self.colors_tab(ui),
                 _ => self.media_tab(ui),
             });
-
-        // keyframes button pinned to the bottom of the Transform tab
-        if self.tab == 0 {
-            let kb = Rect::from_center_size(pos2(r.center().x, r.bottom() - 36.0), vec2(160.0, 40.0));
-            let resp = ui
-                .interact(kb, ui.id().with("kf"), Sense::click())
-                .on_hover_cursor(CursorIcon::PointingHand);
-            if resp.clicked() {
-                self.keyframes = !self.keyframes;
-            }
-            if self.keyframes {
-                pressed(&pt, kb, 20.0, 3.0);
-            } else {
-                raised(&pt, kb, 20.0, 4.0);
-            }
-            let col = if self.keyframes { BLUE } else { INK };
-            pt.text(kb.center(), Align2::CENTER_CENTER, "◆  Keyframes", FontId::proportional(15.0), col);
-        }
     }
 
     fn transform_tab(&mut self, ui: &mut Ui) {
@@ -710,11 +738,29 @@ fn raised(p: &Painter, r: Rect, rad: f32, d: f32) {
     raised_fill(p, r, rad, d, SURFACE);
 }
 
-/// recessed surface: slightly darker fill with a soft shade along the top edge
+/// recessed surface: slightly darker fill + soft inner shade, all drawn INSIDE the
+/// rounded outline (no clip box, so nothing bleeds into the square corners)
 fn pressed(p: &Painter, r: Rect, rad: f32, d: f32) {
     p.rect_filled(r, rad, Color32::from_black_alpha(16));
-    let cp = p.with_clip_rect(r.intersect(p.clip_rect()));
-    cp.rect_stroke(r.translate(vec2(0.0, d * 0.8)), rad, Stroke::new(d * 1.6, in_dark()));
+    let n = (d * 1.6).ceil().max(2.0) as i32;
+    for k in 0..n {
+        let t = 1.0 - k as f32 / n as f32;
+        let kf = k as f32;
+        // faint ring all the way round
+        p.rect_stroke(
+            r.shrink(kf + 0.5),
+            (rad - kf - 0.5).max(0.0),
+            Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(40, 52, 80, (22.0 * t) as u8)),
+        );
+        // extra shade along the straight part of the top edge
+        let y = r.top() + kf + 0.5;
+        if r.width() > rad * 2.0 {
+            p.line_segment(
+                [pos2(r.left() + rad, y), pos2(r.right() - rad, y)],
+                Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(40, 52, 80, (34.0 * t) as u8)),
+            );
+        }
+    }
 }
 
 fn diamond(p: &Painter, c: Pos2, s: f32, col: Color32, filled: bool) {
@@ -796,10 +842,12 @@ fn fmt_time(s: f32) -> String {
 fn main() -> eframe::Result<()> {
     let opts = eframe::NativeOptions {
         viewport: ViewportBuilder::default()
+            .with_title("Hanabi")
+            .with_decorations(false)
             .with_inner_size([1280.0, 720.0])
             .with_min_inner_size([900.0, 560.0])
             .with_transparent(true),
         ..Default::default()
     };
-    eframe::run_native("Glass Editor", opts, Box::new(|cc| Ok(Box::new(App::new(cc)))))
+    eframe::run_native("Hanabi", opts, Box::new(|cc| Ok(Box::new(App::new(cc)))))
 }
